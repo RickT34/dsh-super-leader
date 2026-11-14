@@ -38,12 +38,17 @@ function bool(args, key) {
   return value;
 }
 
+/** Drop undefined and non-JSON values: DSH requires lossless JSON tool output. */
+function jsonSafe(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
 /** Run a tool body and turn known failures into a structured result the model can act on. */
 async function run(exec, body) {
   const leader = exec.agent;
   if (leader === undefined) return { ok: false, error: 'no_agent', message: 'This tool must be called by an agent.' };
   try {
-    return { ok: true, ...(await body(requireRuntime(), leader)) };
+    return jsonSafe({ ok: true, ...(await body(requireRuntime(), leader)) });
   } catch (error) {
     if (exec.signal?.aborted) throw error;
     return { ok: false, error: error?.code ?? 'failed', message: error?.message ?? String(error) };
@@ -76,7 +81,7 @@ export function apply(ctx, config = {}) {
 
   ctx.tools.register({
     name: 'list_sessions',
-    description: 'List top-level DSH sessions (newest first): id, title, workspace, whether it is running, last update, and the latest task the Leader dispatched to it. Read-only.',
+    description: 'List top-level DSH sessions (newest first): id, title, workspace, whether it is running, last update, the first line of its latest request, and the latest task the Leader dispatched to it. Titles are often stale; use read_session to see what a session actually did. Read-only.',
     parameters: objectSchema({
       workspace_id: { type: 'string', description: 'Only sessions in this workspace.' },
       query: { type: 'string', description: 'Case-insensitive substring filter on title or directory.' },
@@ -89,6 +94,23 @@ export function apply(ctx, config = {}) {
       const limit = args.limit === undefined ? 30 : args.limit;
       if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('limit must be an integer from 1 to 100');
       return rt.listSessions({ workspaceId: str(args, 'workspace_id'), query: str(args, 'query'), limit, leader }, exec.signal);
+    }),
+  });
+
+  ctx.tools.register({
+    name: 'read_session',
+    description: 'Read what a session has actually done: its recent requests and the agent\'s replies, a one-line list of earlier requests, its todo list, files it wrote or edited, and Leader tasks sent to it. Read-only. Call this before dispatching to an existing session, so the brief only needs to state what is new.',
+    parameters: objectSchema({
+      session_id: { type: 'string', description: 'Session id from list_sessions.' },
+      recent_turns: { type: 'integer', description: 'How many latest exchanges to show in full, 1-10; default 4.' },
+    }, ['session_id']),
+    output: { schema: OPEN_OBJECT, render },
+    presentCall: args => card('Read session', 'read', args?.session_id),
+    execute: (args, exec) => run(exec, async (rt, leader) => {
+      onlyKeys(args, ['session_id', 'recent_turns']);
+      const recentTurns = args.recent_turns === undefined ? 4 : args.recent_turns;
+      if (!Number.isInteger(recentTurns) || recentTurns < 1 || recentTurns > 10) throw new Error('recent_turns must be an integer from 1 to 10');
+      return rt.readSession({ sessionId: str(args, 'session_id', { required: true, max: 200 }), recentTurns, leader });
     }),
   });
 
@@ -139,7 +161,7 @@ export function apply(ctx, config = {}) {
 
   ctx.tools.register({
     name: 'dispatch_task',
-    description: 'Send a task brief to a worker session. Target either an existing session (session_id) or a workspace (workspace_id) where a new session is created. The worker cannot see this conversation, so the brief must be self-contained: goal, context, constraints, deliverable, acceptance criteria. When the worker finishes its turn you receive a "[Leader report]" message. Requires user approval unless the session has full access.',
+    description: 'Send a task to a worker session. Target either an existing session (session_id) or a workspace (workspace_id) where a new session is created. For an existing session, read_session first and write only the next step: what is new or changed relative to what it already did, plus the done criteria; do not restate the project. For a new session, the worker knows nothing, so the brief must be self-contained: goal, context, constraints, deliverable, acceptance criteria. When the worker finishes its turn you receive a "[Leader report]" message. Requires user approval unless the session has full access.',
     parameters: objectSchema({
       title: { type: 'string', description: 'Short task title (also used as the new session title).' },
       brief: { type: 'string', description: 'The complete, self-contained task brief.' },

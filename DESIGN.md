@@ -39,6 +39,7 @@ agent.ctx.tools.restrict({ deny: <所有全局工具 − allowTools> })
 |---|---|---|
 | `list_workspaces` | 读 | 列出已登记工作区：id、标题、路径、会话数、用途说明 |
 | `list_sessions` | 读 | 列出会话：id、标题、所在工作区、是否运行中、最近更新时间、最近任务 |
+| `read_session` | 读 | 从会话事件日志生成摘要：最近几轮的请求与回复、更早请求的首行、压缩摘要、待办清单、写过的文件、本 Leader 派给它的任务 |
 | `task_status` | 读 | 查看本 Leader 派发过的任务及回报 |
 | `create_workspace` | 写 | 在允许的根目录下新建目录（可选 `git clone` / `git init` / 写 `AGENTS.md`），并登记为工作区 |
 | `dispatch_task` | 写 | 派发任务：发给已有会话，或在指定工作区新建会话再发 |
@@ -66,6 +67,12 @@ agent.ctx.tools.restrict({ deny: <所有全局工具 − allowTools> })
 5. 回报以 `[Leader report]` 开头，作为 agent 间转发消息（`source.kind = agent-message`，`form = relay`，与 DSH 子代理消息同形）`followup` 给 Leader 会话。界面上显示为 “Task message received”，不会冒充用户发言。Leader 空闲时被唤醒；忙时排队到当前轮次之后。
 
 轮次结束原因映射：`completed→completed`、`aborted→cancelled`、`error→failed`、`blocked→blocked`。
+
+## 续派任务
+
+- Leader 续用已有会话前先调用 `read_session`，简报只写下一步：新需求、变化、用户的决定、完成标准，不重述项目。
+- 已经收到过 Leader 任务的会话，续派时只附一行回报格式提示，不再附完整的回报模板。
+- `list_sessions` 每行附带最近一次请求的首行，作为路由线索。
 
 ## 防止递归
 

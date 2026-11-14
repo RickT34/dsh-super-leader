@@ -109,3 +109,85 @@ test('messages carry the ids and the report contract', () => {
   assert.ok(report.startsWith(REPORT_PREFIX));
   assert.match(report, /without a text reply/);
 });
+
+import { sessionDigest, lastRequestOf, stripBriefFooter, touchedFiles } from '../src/core.js';
+
+let seq = 0;
+const ev = (type, data) => ({ type, seq: seq++, time: Date.UTC(2026, 10, 14, 10, 0, seq), data });
+const userMsg = (text, kind = 'user') => ev('user/message', { content: [{ type: 'text', text }], source: { kind } });
+const reply = text => ev('assistant/message', { message: { content: [{ type: 'text', text }, { type: 'tool-call', name: 'x' }] } });
+
+function sampleLog() {
+  seq = 0;
+  const brief = workerBrief({ taskId: 'T-aaaaaa', title: 'Add i18n', brief: 'Localize the plugin page.', leaderSessionId: 'session-L' });
+  return [
+    ev('session/title', { title: 'Old research title' }),
+    userMsg('Research leader agents'),
+    userMsg('runtime context', 'runtime-context'),
+    reply('Found ccteam and firstmate.'),
+    ev('turn/end', { reason: { kind: 'completed' } }),
+    userMsg('Implement it'),
+    ev('tool/call', { name: 'write', arguments: JSON.stringify({ file_path: '/w/src/host.js', content: 'x' }) }),
+    ev('tool/call', { name: 'edit', arguments: { file_path: '/w/src/host.js' } }),
+    ev('tool/call', { name: 'apply_patch', arguments: JSON.stringify({ input: '*** Begin Patch\n*** Add File: /w/README.md\n+x\n*** Update File: /w/src/core.js\n*** End Patch' }) }),
+    ev('tool/call', { name: 'bash', arguments: '{"command":"ls"}' }),
+    ev('todo/write', { todos: [{ content: 'tests', status: 'completed' }] }),
+    reply('Implemented and tested.'),
+    ev('turn/end', { reason: { kind: 'completed' } }),
+    ev('compaction/summary', { summary: [{ type: 'text', text: 'Summary of earlier work' }] }),
+    userMsg(brief),
+    reply('Plugin has no UI of its own.\n\n## Report\n- Status: needs-decision'),
+  ];
+}
+
+test('stripBriefFooter removes the dispatch footer only', () => {
+  const brief = workerBrief({ taskId: 'T-aaaaaa', title: 't', brief: 'body', leaderSessionId: 'L' });
+  assert.equal(stripBriefFooter(brief), '# Task T-aaaaaa: t\n\nbody');
+  const follow = workerBrief({ taskId: 'T-bbbbbb', title: 't', brief: 'next', leaderSessionId: 'L', followup: true });
+  assert.equal(stripBriefFooter(follow), '# Task T-bbbbbb: t\n\nnext');
+  assert.ok(follow.length < brief.length);
+  assert.match(follow, /## Report/);
+  assert.equal(stripBriefFooter('plain --- text'), 'plain --- text');
+});
+
+test('touchedFiles reads write, edit and apply_patch arguments', () => {
+  assert.deepEqual(touchedFiles('write', '{"file_path":"/a"}'), ['/a']);
+  assert.deepEqual(touchedFiles('edit', { file_path: '/b' }), ['/b']);
+  assert.deepEqual(touchedFiles('apply_patch', { input: '*** Delete File: /c\n*** Update File: /d' }), ['/c', '/d']);
+  assert.deepEqual(touchedFiles('write', 'not json'), []);
+});
+
+test('sessionDigest summarizes requests, replies, todos and files', () => {
+  const digest = sessionDigest(sampleLog(), { recentTurns: 2 });
+  assert.equal(digest.title, 'Old research title');
+  assert.equal(digest.exchanges_total, 3);
+  assert.deepEqual(digest.earlier_requests, ['1. Research leader agents']);
+  assert.equal(digest.recent.length, 2);
+  assert.equal(digest.recent[0].request, 'Implement it');
+  assert.equal(digest.recent[0].reply, 'Implemented and tested.');
+  assert.equal(digest.recent[0].tool_calls, 4);
+  assert.equal(digest.recent[0].ended, 'completed');
+  const last = digest.recent[1];
+  assert.equal(last.request, '# Task T-aaaaaa: Add i18n\n\nLocalize the plugin page.');
+  assert.equal(last.ended, 'in-progress');
+  assert.match(last.reply, /needs-decision/);
+  assert.equal(digest.compacted_summary, 'Summary of earlier work');
+  assert.deepEqual(digest.todos, [{ content: 'tests', status: 'completed' }]);
+  assert.equal(digest.files_changed[0], '/w/src/host.js');
+  assert.deepEqual([...digest.files_changed].sort(), ['/w/README.md', '/w/src/core.js', '/w/src/host.js']);
+});
+
+test('sessionDigest truncates long text and handles empty logs', () => {
+  seq = 0;
+  const digest = sessionDigest([userMsg('x'.repeat(5000)), reply('y'.repeat(5000))], { requestChars: 300, replyChars: 500 });
+  assert.ok(digest.recent[0].request.length < 400);
+  assert.ok(digest.recent[0].reply.length < 600);
+  assert.deepEqual(sessionDigest([]), { title: null, exchanges_total: 0, earlier_requests: [], recent: [], todos: null, files_changed: [] });
+});
+
+test('lastRequestOf returns the latest user or agent request', () => {
+  assert.equal(lastRequestOf(sampleLog()), '# Task T-aaaaaa: Add i18n');
+  seq = 0;
+  assert.equal(lastRequestOf([userMsg('first'), userMsg('context', 'runtime-context')]), 'first');
+  assert.equal(lastRequestOf([]), null);
+});

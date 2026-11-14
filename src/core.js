@@ -157,8 +157,22 @@ export function textOf(content) {
   return content.filter(block => block && block.type === 'text' && typeof block.text === 'string').map(block => block.text).join('\n').trim();
 }
 
-/** The message a worker receives. */
-export function workerBrief({ taskId, title, brief, leaderSessionId }) {
+export const BRIEF_FOOTER_MARK = '\n---\nThis task was assigned by a leader session';
+const FOLLOWUP_FOOTER_MARK = '\n---\nFollow-up from the leader session';
+
+/**
+ * The message a worker receives. A session that already received a Leader task
+ * knows the report format, so a follow-up gets a one-line footer.
+ */
+export function workerBrief({ taskId, title, brief, leaderSessionId, followup = false }) {
+  if (followup) {
+    return [
+      `# Task ${taskId}: ${title}`,
+      '',
+      brief.trim(),
+      `${FOLLOWUP_FOOTER_MARK} (${leaderSessionId}). End your final reply with the same "## Report" block as before (Status / Summary / Changes / Open questions).`,
+    ].join('\n');
+  }
   return [
     `# Task ${taskId}: ${title}`,
     '',
@@ -193,12 +207,139 @@ export const LEADER_PERSONA = `You are the Leader: a coordinator that manages th
 
 ## How you work
 1. Clarify before dispatching. For every request, check that you know: the goal, the scope, the expected deliverable, how the user will judge it done, and which workspace it belongs to. If any of these is missing or ambiguous, ask with ask_user_question. Offer concrete options (candidate workspaces, "continue session X" vs "new session") so the user can answer with one click. Never fill gaps with guesses. Asking one more question is cheaper than a wrong dispatch. When you ask, stop and wait for the answer: never ask a question and act on your own guess in the same turn.
-2. Look before routing. Use list_workspaces and list_sessions to find where the work belongs. Prefer an existing workspace when it clearly matches. Continue an existing idle session only when the task directly continues that session's topic; otherwise create a new session in the right workspace.
+2. Look before routing. Use list_workspaces and list_sessions to find candidates. Titles are often stale or vague, so before choosing an existing session, call read_session on it to see what it actually did and where it stopped. Continue an existing session when the task builds on its work; otherwise create a new session in the right workspace. If the session's state changes what the user should decide (for example the work is half done, or it went a different way), tell the user and ask.
 3. Create a workspace only for genuinely new projects. Ask the user to confirm the directory name and purpose with ask_user_question (offer your suggested name as the first option) before calling create_workspace, unless the user already gave both.
-4. Write a self-contained brief. The worker cannot see this conversation. The brief passed to dispatch_task must state: goal, background and context the user gave, constraints, deliverable, and acceptance criteria. Use the user's own words for requirements.
+4. Fit the brief to the target.
+   - Existing session: it already has its own context. Write only the next step: what the user wants now, what changed, any decision the user made, and how to tell it is done. A few lines is normal. Do not restate the project, re-describe its code, or prescribe how to implement things it already knows better than you.
+   - New session: it knows nothing and cannot see this conversation. The brief must be self-contained: goal, background the user gave, constraints, deliverable, and acceptance criteria.
+   - In both cases, use the user's own words for requirements, and do not state guesses about the project as facts. If you are unsure whether something exists, say so and let the worker check.
 5. Do not re-confirm what an approval card already shows. When the user has answered your clarifying questions, dispatch; the approval card (when approval is required) is the final confirmation.
-6. Stay at the coordination level. Do not try to read code, inspect files, or solve the task. If you need technical facts to route a task, dispatch a short investigation task instead.
+6. Stay at the coordination level. Do not try to read code, inspect files, or solve the task. read_session tells you what a worker did; it is for routing and briefing, not for doing the work. If you need technical facts that no session has, dispatch a short investigation task instead.
 7. Relay reports faithfully. When a "${REPORT_PREFIX}" message arrives, summarize the result for the user, and turn any open questions or decisions in it into questions for the user. Never make decisions on the user's behalf.
 8. Track work with task_status. Use cancel_task only when the user asks to stop a task.
 
 Reply in the user's language. Keep messages short and concrete.`;
+
+// ── session digest ──────────────────────────────────────────────────────────
+// A compact, read-only picture of what a session has done, built from its raw
+// event log, so the Leader can route by content instead of by title.
+
+const REQUEST_SOURCES = new Set(['user', 'agent-message', 'schedule']);
+const WRITE_TOOLS = new Set(['write', 'edit', 'apply_patch', 'str_replace_editor']);
+
+/** Remove the footer dsh-super-leader appends to dispatched briefs. */
+export function stripBriefFooter(text) {
+  for (const mark of [BRIEF_FOOTER_MARK, FOLLOWUP_FOOTER_MARK]) {
+    const at = text.indexOf(mark);
+    if (at >= 0) return text.slice(0, at).trimEnd();
+  }
+  return text;
+}
+
+function firstLine(text, max) {
+  const line = text.split('\n').map(part => part.trim()).find(part => part.length > 0) ?? '';
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
+}
+
+function parseArgs(raw) {
+  if (raw && typeof raw === 'object') return raw;
+  if (typeof raw !== 'string') return {};
+  try { return JSON.parse(raw); } catch { return {}; }
+}
+
+/** File paths a write-type tool call touched. */
+export function touchedFiles(name, rawArgs) {
+  const args = parseArgs(rawArgs);
+  if (name === 'apply_patch' && typeof args.input === 'string') {
+    return [...args.input.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)].map(match => match[1].trim());
+  }
+  const path = args.file_path ?? args.path;
+  return typeof path === 'string' ? [path] : [];
+}
+
+/**
+ * Summarize a session event log.
+ * @param events - raw session events in seq order.
+ * @param options - recentTurns: exchanges shown in full; budgets in characters.
+ */
+export function sessionDigest(events, { recentTurns = 4, requestChars = 800, replyChars = 1500, olderReplyChars = 400, summaryChars = 2500, maxFiles = 30 } = {}) {
+  const exchanges = [];
+  let current;
+  let title = null;
+  let todos = null;
+  let compaction = null;
+  const files = new Map();
+  for (const event of events) {
+    const data = event.data ?? {};
+    switch (event.type) {
+      case 'session/title':
+        if (typeof data.title === 'string') title = data.title;
+        break;
+      case 'todo/write':
+        if (Array.isArray(data.todos)) todos = data.todos;
+        break;
+      case 'compaction/summary':
+        compaction = { text: textOf(data.summary), before: exchanges.length };
+        break;
+      case 'user/message': {
+        const kind = data.source?.kind;
+        if (!REQUEST_SOURCES.has(kind)) break;
+        const text = stripBriefFooter(textOf(data.content));
+        if (!text) break;
+        current = { from: kind === 'user' ? 'user' : kind, time: event.time, request: text, reply: '', tools: 0, end: null };
+        exchanges.push(current);
+        break;
+      }
+      case 'assistant/message': {
+        if (current === undefined) break;
+        const text = textOf(data.message?.content);
+        if (text) current.reply = text;
+        break;
+      }
+      case 'tool/call':
+        if (current !== undefined) current.tools += 1;
+        if (WRITE_TOOLS.has(data.name)) for (const path of touchedFiles(data.name, data.arguments)) files.set(path, (files.get(path) ?? 0) + 1);
+        break;
+      case 'turn/end':
+        if (current !== undefined) current.end = data.reason?.kind ?? null;
+        break;
+      default:
+        break;
+    }
+  }
+  const recentStart = Math.max(0, exchanges.length - recentTurns);
+  const view = (exchange, index) => {
+    const latest = index === exchanges.length - 1;
+    return {
+      n: index + 1,
+      from: exchange.from,
+      at: exchange.time === undefined ? null : new Date(exchange.time).toISOString(),
+      request: truncate(exchange.request, requestChars),
+      reply: exchange.reply ? truncate(exchange.reply, latest ? replyChars : olderReplyChars) : null,
+      tool_calls: exchange.tools,
+      ended: exchange.end ?? (latest ? 'in-progress' : null),
+    };
+  };
+  const fileList = [...files.entries()].sort((a, b) => b[1] - a[1]).slice(0, maxFiles).map(([path]) => path);
+  return {
+    title,
+    exchanges_total: exchanges.length,
+    earlier_requests: exchanges.slice(0, recentStart).map((exchange, index) => `${index + 1}. ${firstLine(exchange.request, 100)}`),
+    ...(compaction && compaction.text ? { compacted_summary: truncate(compaction.text, summaryChars) } : {}),
+    recent: exchanges.slice(recentStart).map((exchange, offset) => view(exchange, recentStart + offset)),
+    todos,
+    files_changed: fileList,
+    ...(files.size > fileList.length ? { files_changed_more: files.size - fileList.length } : {}),
+  };
+}
+
+/** First line of the latest user or agent request in a session, for list rows. */
+export function lastRequestOf(events, max = 120) {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i];
+    if (event.type !== 'user/message' || !REQUEST_SOURCES.has(event.data?.source?.kind)) continue;
+    const text = stripBriefFooter(textOf(event.data.content));
+    if (text) return firstLine(text, max);
+  }
+  return null;
+}

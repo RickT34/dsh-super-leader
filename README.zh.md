@@ -7,6 +7,7 @@ DeepSeek Harness 的 **Leader（领导）** Agent 预设。Leader 会话不自�
 - **先问清楚。** 派活前，Leader 会检查目标、范围、交付物、验收标准和目标工作区。有不清楚的地方就用 `ask_user_question` 提问，给出可以一键选择的选项。
 - **只有调度工具。** Leader 会话只能看到本插件的工具和 `ask_user_question`。其他插件注册的全局工具（MCP、记忆、IM 等）默认隐藏，可以按需放行。
 - **写操作需要审批。** 新建工作区、派发任务、停止任务时会弹出审批卡片，卡片上是完整的任务简报。会话的访问模式为 **Full access（完全权限）** 时直接执行，不再审批。
+- **了解每个会话做过什么。** 续用已有会话前，Leader 会先读它最近的请求、回复、待办清单和改过的文件，续派的任务只需要说明新增的需求。
 - **自动回报。** 下属会话完成一轮后，它的最终回复会自动发回 Leader。Leader 整理后告诉你，并把其中的待决问题转成问题问你。
 
 ![Leader 澄清需求](assets/clarify.png)
@@ -15,13 +16,21 @@ DeepSeek Harness 的 **Leader（领导）** Agent 预设。Leader 会话不自�
 
 ![下属回报转达给 Leader](assets/report.png)
 
+对已有项目提出新需求时，Leader 会先读取那个会话，再只发送下一步要做的事：
+
+![Leader 派活前先读取会话](assets/followup-leader.png)
+
+![下属会话收到简短的续派任务](assets/followup-worker.png)
+
 ## 安装
 
 需要 DeepSeek Harness `>=0.2.2-rc.1 <0.3.0`。
 
 ```sh
-dsh plugin --profile web add github:RickT34/dsh-super-leader
+dsh plugin --profile web add dsh-super-leader
 ```
+
+也可以从 GitHub 安装最新代码：`dsh plugin --profile web add github:RickT34/dsh-super-leader`。
 
 重启 `dsh web`。点 **New Session**，在工作区选择器旁边的模式菜单里选 **Leader**。预设只能在会话还没有内容时选择，所以要新建一个会话来用。
 
@@ -30,7 +39,8 @@ dsh plugin --profile web add github:RickT34/dsh-super-leader
 | 工具 | 是否审批 | 作用 |
 |---|---|---|
 | `list_workspaces` | 否 | 列出已登记的工作区和用途说明 |
-| `list_sessions` | 否 | 列出会话、所在工作区、是否运行中、最近一次 Leader 任务 |
+| `list_sessions` | 否 | 列出会话、所在工作区、是否运行中、最近一次请求的首行、最近一次 Leader 任务 |
+| `read_session` | 否 | 查看会话实际做了什么：最近的请求和回复、更早的请求列表、待办清单、改过的文件、Leader 派给它的任务 |
 | `task_status` | 否 | 查看已派发的任务和回报 |
 | `create_workspace` | 是 | 在允许的根目录下新建目录（可选 `git clone`、`git init`、写 `AGENTS.md`），并登记为工作区 |
 | `dispatch_task` | 是 | 把任务简报发给已有会话，或在指定工作区新建会话再发 |
@@ -70,6 +80,7 @@ dsh plugin --profile web add github:RickT34/dsh-super-leader
 - 插件声明了 `leader` 预设（Leader 工具、`ask_user_question`、时间上下文、上下文压缩）和一个主机插件。
 - 每个 Leader 会话里，主机插件会屏蔽所有不在 `allowTools` 里的全局工具；之后有新的全局工具出现，也会继续屏蔽。
 - `tools/pre-execute` 钩子把写类工具变成审批请求，完全权限的会话除外。之所以要自己判断：DSH 的完全权限使用 `never` 审批策略，它会直接拒绝所有需要审批的操作。
+- `read_session` 从会话的事件日志生成摘要（通过 DSH 的 `sessionQuery` 服务），反映的是下属实际做了什么，而不只是标题。
 - `dispatch_task` 把任务记入台账，需要时新建下属会话，然后发送任务简报，并在末尾附上回报格式。下属这一轮结束后，这一轮最后一条助手回复会作为 agent 消息转达给 Leader。
 - Leader 不能把任务派给自己，也不能派给其他 Leader 会话。
 
