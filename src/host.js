@@ -16,19 +16,31 @@ import { runtime } from './runtime.js';
 
 const run = promisify(execFile);
 
+// Leader tools that may be put behind approval from the settings page.
+const LEADER_WRITE_CANDIDATES = ['create_workspace', 'dispatch_task', 'cancel_task'];
+
 export const name = 'super-leader';
 export const inject = ['agents', 'sessions', 'tools'];
 
+// Volatile fields are editable from the Web settings page and take effect
+// without a restart; presetId and ledgerFile are read once at startup.
 export const Config = z.object({
   presetId: z.string().default(DEFAULT_PRESET_ID).description('Agent preset id treated as the Leader.'),
-  allowTools: z.array(z.string()).default([]).description('Global tools (from other plugins) a Leader session may still use, e.g. dsh_im_return_file.'),
-  writeTools: z.array(z.string()).default(DEFAULT_WRITE_TOOLS).description('Leader tools that require approval unless the session has full access.'),
-  fullAccessPresets: z.array(z.string()).default(DEFAULT_FULL_ACCESS).description('Permission presets under which write tools run without approval.'),
-  workspaceRoots: z.array(z.string()).default(['~/Work']).description('Directories under which create_workspace may create projects.'),
-  workerPreset: z.string().description('Agent preset for newly created worker sessions; empty uses the host default.'),
-  reportMaxChars: z.number().min(200).default(4000).description('Maximum characters of a worker report relayed to the Leader.'),
+  allowTools: z.array(z.string()).default([]).volatile().description('Global tools (from other plugins) a Leader session may still use, e.g. dsh_im_return_file.'),
+  writeTools: z.array(z.string()).default(DEFAULT_WRITE_TOOLS).volatile().description('Leader tools that require approval unless the session has full access.'),
+  fullAccessPresets: z.array(z.string()).default(DEFAULT_FULL_ACCESS).volatile().description('Permission presets under which write tools run without approval.'),
+  workspaceRoots: z.array(z.string()).default(['~/Work']).volatile().description('Directories under which create_workspace may create projects.'),
+  workerPreset: z.string().default('').volatile().description('Agent preset for newly created worker sessions; empty uses the host default.'),
+  reportMaxChars: z.number().min(200).default(4000).volatile().description('Maximum characters of a worker report relayed to the Leader.'),
   ledgerFile: z.string().description('Ledger path; defaults to $DSH_HOME/super-leader/ledger.json.'),
 });
+
+/** Read a config field that may be a volatile reference. */
+export function readConfig(config, key, fallback) {
+  const ref = config?.[key];
+  const value = ref && typeof ref === 'object' && typeof ref.get === 'function' ? ref.get() : ref;
+  return value ?? fallback;
+}
 
 function dshHome() {
   return process.env.DSH_HOME || join(homedir(), '.dsh');
@@ -40,10 +52,14 @@ function presetOf(ctx, agent) {
 
 export function apply(ctx, config) {
   const presetId = config.presetId ?? DEFAULT_PRESET_ID;
-  const allowTools = new Set(config.allowTools ?? []);
-  const writeTools = new Set(config.writeTools ?? DEFAULT_WRITE_TOOLS);
-  const fullAccess = new Set(config.fullAccessPresets ?? DEFAULT_FULL_ACCESS);
-  const reportMax = config.reportMaxChars ?? 4000;
+  const setting = {
+    allowTools: () => new Set(readConfig(config, 'allowTools', [])),
+    writeTools: () => new Set(readConfig(config, 'writeTools', DEFAULT_WRITE_TOOLS)),
+    fullAccess: () => new Set(readConfig(config, 'fullAccessPresets', DEFAULT_FULL_ACCESS)),
+    workspaceRoots: () => [...readConfig(config, 'workspaceRoots', ['~/Work'])],
+    workerPreset: () => readConfig(config, 'workerPreset', '') || undefined,
+    reportMax: () => readConfig(config, 'reportMaxChars', 4000),
+  };
   const ledger = new Ledger(config.ledgerFile || join(dshHome(), 'super-leader', 'ledger.json'));
   const ready = ledger.load();
   const isLeader = agent => agent !== undefined && presetOf(ctx, agent) === presetId;
@@ -53,20 +69,28 @@ export function apply(ctx, config) {
   // preset itself mounts are scoped registrations and stay visible.
   // Candidates come from the global view (no scope): exactly the names
   // `tools.restrict` accepts, minus nothing the preset registers itself.
-  const restricted = new Map(); // agent -> Set of denied names
+  // When allowTools changes, the agent's restrictions are dropped and rebuilt.
+  const restricted = new Map(); // agent -> { key, denied: Set, disposers: [] }
   function denyGlobals(agent) {
     if (!isLeader(agent)) return;
-    let denied = restricted.get(agent);
-    if (denied === undefined) { denied = new Set(); restricted.set(agent, denied); }
+    const allow = setting.allowTools();
+    const key = JSON.stringify([...allow].sort());
+    let state = restricted.get(agent);
+    if (state !== undefined && state.key !== key) {
+      restricted.delete(agent);
+      for (const dispose of state.disposers) { try { dispose(); } catch { /* already lifted */ } }
+      state = undefined;
+    }
+    if (state === undefined) { state = { key, denied: new Set(), disposers: [] }; restricted.set(agent, state); }
     const globals = [...ctx.tools.view(undefined).visible.keys()];
-    const fresh = globals.filter(name => !allowTools.has(name) && !denied.has(name) && name !== 'run_code');
+    const fresh = globals.filter(name => !allow.has(name) && !state.denied.has(name) && name !== 'run_code');
     if (fresh.length === 0) return;
     // Mark first: restrict() emits tools/change synchronously, which re-enters here.
-    for (const name of fresh) denied.add(name);
+    for (const name of fresh) state.denied.add(name);
     try {
-      agent.ctx.tools.restrict({ deny: fresh });
+      state.disposers.push(agent.ctx.tools.restrict({ deny: fresh }));
     } catch (error) {
-      for (const name of fresh) denied.delete(name);
+      for (const name of fresh) state.denied.delete(name);
       ctx.logger.warn(`super-leader: could not restrict tools for ${agent.id}: ${error?.message ?? error}`);
     }
   }
@@ -80,13 +104,22 @@ export function apply(ctx, config) {
     for (const agent of ctx.agents.roots()) if (isLeader(agent)) denyGlobals(agent);
   });
   ctx.on('agent/disposed', ({ agent }) => { restricted.delete(agent); });
+  // Settings edits land between steps; re-check before each Leader step.
+  ctx.on('agent/pre-step', (payload, next) => {
+    if (isLeader(payload.agent)) denyGlobals(payload.agent);
+    return next();
+  });
+  ctx.on('settings/document-updated', ns => {
+    if (ns !== 'super-leader') return;
+    for (const agent of ctx.agents.roots()) if (isLeader(agent)) denyGlobals(agent);
+  });
 
   // ── approval gate ────────────────────────────────────────────────────────
   ctx.on('tools/pre-execute', async (exec, next) => {
     const agent = exec.agent;
-    if (agent === undefined || !writeTools.has(exec.name) || !isLeader(agent)) return next();
+    if (agent === undefined || !setting.writeTools().has(exec.name) || !isLeader(agent)) return next();
     const permission = ctx.get('permissionPresets')?.current(agent.session);
-    if (permission !== undefined && fullAccess.has(permission)) return next();
+    if (permission !== undefined && setting.fullAccess().has(permission)) return next();
     const downstream = await next();
     if (downstream.kind !== 'allow') return downstream;
     return {
@@ -135,7 +168,7 @@ export function apply(ctx, config) {
     if (status === 'failed' && event.data?.reason?.error?.message) {
       report = `${report}\n\nError: ${event.data.reason.error.message}`.trim();
     }
-    report = truncate(report, reportMax);
+    report = truncate(report, setting.reportMax());
     const task = await ledger.updateTask(taskId, { status, report, finishedAt: new Date(event.time).toISOString() });
     if (task === undefined) return;
     await notifyLeader(task, status, report);
@@ -253,7 +286,7 @@ export function apply(ctx, config) {
     async createWorkspace(input, signal) {
       await ready;
       const registry = requireService('workspaceRegistry');
-      const root = resolveRoot(config.workspaceRoots ?? ['~/Work'], input.root);
+      const root = resolveRoot(setting.workspaceRoots(), input.root);
       await mkdir(root, { recursive: true });
       const plan = await planWorkspaceDirectory({
         root, name: input.name, registerExisting: input.registerExisting,
@@ -306,7 +339,7 @@ export function apply(ctx, config) {
       } else {
         workspace = registry?.get(workspaceId);
         if (workspace === undefined) throw new LeaderError('workspace_not_found', `Unknown workspace ${workspaceId}; call list_workspaces.`);
-        const workerPreset = config.workerPreset || undefined;
+        const workerPreset = setting.workerPreset();
         const defaultPreset = ctx.get('agentPresets')?.defaultId;
         if ((workerPreset ?? defaultPreset) === presetId) {
           throw new LeaderError('worker_is_leader', `Worker sessions would use the Leader preset. Set super-leader.workerPreset to another preset.`);
@@ -433,6 +466,34 @@ export function apply(ctx, config) {
     };
     await Promise.all(Array.from({ length: 4 }, worker));
   }
+
+  // ── settings page support ─────────────────────────────────────────────────
+  // Options the browser settings page offers in its pickers.
+  const optionsRoute = ctx.inject(['connection'], scope => {
+    scope.connection.fetch.register({
+      path: '/api/super-leader/options',
+      methods: ['GET'],
+      requestBody: 'buffered',
+      async fetch() {
+        const presets = ctx.get('agentPresets');
+        const permissions = ctx.get('permissionPresets');
+        const body = {
+          presetId,
+          agentPresets: presets === undefined ? [] : (await presets.list())
+            .filter(row => row.broken === undefined)
+            .map(row => ({ id: row.id, name: row.name ?? row.id })),
+          defaultAgentPreset: presets?.defaultId ?? null,
+          permissionPresets: permissions === undefined ? [] : permissions.catalog().options
+            .filter(option => option.value !== 'custom')
+            .map(option => ({ id: option.value, name: option.name ?? option.value })),
+          globalTools: [...ctx.tools.view(undefined).visible.keys()].filter(name => name !== 'run_code').sort(),
+          leaderTools: [...LEADER_WRITE_CANDIDATES],
+        };
+        return new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } });
+      },
+    });
+  });
+  void optionsRoute;
 
   function requireService(name) {
     const value = ctx.get(name);

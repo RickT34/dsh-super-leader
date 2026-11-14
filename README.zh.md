@@ -12,16 +12,6 @@ DeepSeek Harness 的 **Leader（领导）** Agent 预设。Leader 会话不自�
 
 ![Leader 澄清需求](assets/clarify.png)
 
-![带任务简报的审批卡片](assets/approval.png)
-
-![下属回报转达给 Leader](assets/report.png)
-
-对已有项目提出新需求时，Leader 会先读取那个会话，再只发送下一步要做的事：
-
-![Leader 派活前先读取会话](assets/followup-leader.png)
-
-![下属会话收到简短的续派任务](assets/followup-worker.png)
-
 ## 安装
 
 需要 DeepSeek Harness `>=0.2.2-rc.1 <0.3.0`。
@@ -50,7 +40,9 @@ dsh plugin --profile web add dsh-super-leader
 
 ## 配置
 
-在 profile 的 `cordis.patch.yml` 里覆盖 `super-leader` 这一项：
+在 Web 界面打开 **Plugins → Super Leader**，插件页上就是设置表单。修改后对 Leader 会话立即生效，已经打开的会话也一样，不需要重启。
+
+表单修改的是 profile 的 `cordis.patch.yml` 里 `super-leader` 这一项，所以也可以直接编辑这个文件：
 
 ```yaml
 - id: super-leader
@@ -66,14 +58,14 @@ dsh plugin --profile web add dsh-super-leader
 
 | 配置项 | 默认值 | 含义 |
 |---|---|---|
-| `presetId` | `leader` | 视为 Leader 的预设 id |
+| `presetId` | `leader` | 视为 Leader 的预设 id（只能改文件，需要重启） |
 | `allowTools` | `[]` | Leader 会话仍可使用的全局工具 |
 | `writeTools` | `create_workspace`、`dispatch_task`、`cancel_task` | 需要审批的工具 |
 | `fullAccessPresets` | `[danger-full-access]` | 免审批的权限预设 |
 | `workspaceRoots` | `[~/Work]` | 新建工作区允许的父目录 |
 | `workerPreset` | 主机默认 | 新建下属会话的预设，不能是 Leader 预设 |
 | `reportMaxChars` | `4000` | 回报长度上限 |
-| `ledgerFile` | `$DSH_HOME/super-leader/ledger.json` | 任务台账位置 |
+| `ledgerFile` | `$DSH_HOME/super-leader/ledger.json` | 任务台账位置（只能改文件，需要重启） |
 
 ## 工作原理
 

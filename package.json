@@ -1,6 +1,6 @@
 {
   "name": "dsh-super-leader",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "description": "Leader agent preset for DeepSeek Harness: a session that clarifies requirements with the user, routes tasks to workspaces and sessions, dispatches them, and relays the workers' reports. Write actions require approval unless the session runs with full access.",
   "license": "MIT",
@@ -27,10 +27,14 @@
     ".": "./src/host.js",
     "./tools": "./src/tools.js",
     "./core": "./src/core.js",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./client": "./client/client.js",
+    "./locale/*.json": "./locale/*.json"
   },
   "files": [
     "src/",
+    "client/",
+    "locale/*.json",
     "cordis.patch.yml",
     "README.md",
     "README.zh.md",
@@ -44,6 +48,14 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-plugin-manager"
+      ]
     }
   },
   "scripts": {

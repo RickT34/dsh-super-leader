@@ -12,16 +12,6 @@ A **Leader** agent preset for DeepSeek Harness. A Leader session does not do the
 
 ![The Leader clarifies the request](assets/clarify.png)
 
-![Approval card with the task brief](assets/approval.png)
-
-![The worker's report relayed to the Leader](assets/report.png)
-
-When you ask for more work on an existing project, the Leader reads that session first and sends only the next step:
-
-![The Leader reads the session before dispatching](assets/followup-leader.png)
-
-![The worker receives a short follow-up brief](assets/followup-worker.png)
-
 ## Install
 
 Requires DeepSeek Harness `>=0.2.2-rc.1 <0.3.0`.
@@ -50,7 +40,9 @@ Restart `dsh web`. Then click **New Session**, open the mode menu next to the wo
 
 ## Configuration
 
-Override the `super-leader` entry in your profile's `cordis.patch.yml`:
+Open **Plugins → Super Leader** in the Web app. The settings form is on the plugin's page, and changes apply to Leader sessions without a restart, including sessions that are already open.
+
+The form edits the `super-leader` entry in your profile's `cordis.patch.yml`, so you can also edit the file directly:
 
 ```yaml
 - id: super-leader
@@ -66,14 +58,14 @@ Override the `super-leader` entry in your profile's `cordis.patch.yml`:
 
 | Option | Default | Meaning |
 |---|---|---|
-| `presetId` | `leader` | Agent preset id treated as the Leader |
+| `presetId` | `leader` | Agent preset id treated as the Leader (file only, needs a restart) |
 | `allowTools` | `[]` | Global tools a Leader session may still use |
 | `writeTools` | `create_workspace`, `dispatch_task`, `cancel_task` | Tools that require approval |
 | `fullAccessPresets` | `[danger-full-access]` | Permission presets that skip approval |
 | `workspaceRoots` | `[~/Work]` | Allowed parent directories for new workspaces |
 | `workerPreset` | host default | Preset for new worker sessions; must not be the Leader preset |
 | `reportMaxChars` | `4000` | Report length limit |
-| `ledgerFile` | `$DSH_HOME/super-leader/ledger.json` | Task ledger location |
+| `ledgerFile` | `$DSH_HOME/super-leader/ledger.json` | Task ledger location (file only, needs a restart) |
 
 ## How it works
 

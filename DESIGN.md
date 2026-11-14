@@ -95,6 +95,8 @@ agent.ctx.tools.restrict({ deny: <所有全局工具 − allowTools> })
 
 ## 配置（Host 插件 `super-leader` 行）
 
+除 `presetId` 和 `ledgerFile` 外，其余字段都声明为 volatile，由浏览器端插件（`client/client.js`）在插件页的 `plugins.bundle.config` 槽位渲染设置表单，通过 DSH 的 `configForms` 写回 profile 补丁，运行中直接生效。`allowTools` 变化时，主机插件撤销并重建 Leader 会话的工具屏蔽；每一步开始前也会重新检查。表单的下拉和勾选项来自 `GET /api/super-leader/options`（Agent 预设、权限预设、当前全局工具）。
+
 | 字段 | 默认 | 含义 |
 |---|---|---|
 | `presetId` | `leader` | Leader 预设 id |
