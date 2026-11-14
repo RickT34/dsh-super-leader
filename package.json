@@ -1,0 +1,55 @@
+{
+  "name": "dsh-super-leader",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Leader agent preset for DeepSeek Harness: a session that clarifies requirements with the user, routes tasks to workspaces and sessions, dispatches them, and relays the workers' reports. Write actions require approval unless the session runs with full access.",
+  "license": "MIT",
+  "author": "RickT34",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RickT34/dsh-super-leader.git"
+  },
+  "homepage": "https://github.com/RickT34/dsh-super-leader#readme",
+  "bugs": {
+    "url": "https://github.com/RickT34/dsh-super-leader/issues"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "agent-preset",
+    "orchestration",
+    "leader",
+    "cordis"
+  ],
+  "main": "src/host.js",
+  "exports": {
+    ".": "./src/host.js",
+    "./tools": "./src/tools.js",
+    "./core": "./src/core.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src/",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh.md",
+    "DESIGN.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.19.0",
+    "dsh": ">=0.2.2-rc.1 <0.3.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/schemastery": "^3.18.4"
+  }
+}

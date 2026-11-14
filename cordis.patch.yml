@@ -1,0 +1,33 @@
+# Bundle patch for dsh-super-leader.
+# 1. `super-leader` mounts the host half once on the host plane (ledger,
+#    approval gate, tool restriction, report-back).
+# 2. `preset-leader` declares the Leader agent preset. Its sessions see only
+#    the Leader tools, ask_user_question, and compaction; every global tool
+#    from other plugins is hidden unless listed in super-leader.allowTools.
+- insert:
+    - id: super-leader
+      name: dsh-super-leader
+    - id: preset-leader
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: leader
+        name: Leader
+        description: Clarify requirements with you, then dispatch tasks to workspaces and sessions and relay the results. Does not do the work itself.
+        order: 50
+        plugins:
+          - id: leader-tools
+            name: dsh-super-leader/tools
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
+          - id: tool-ask-user
+            name: '@deepseek-ai/dsh-tool-ask-user'
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'
