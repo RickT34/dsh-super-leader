@@ -26,7 +26,7 @@ window.__ModuleLoader__.load({
       fullAccess: 'Skip approval under these permission presets',
       fullAccessHint: 'When the Leader session uses one of these access modes, write actions run without an approval card.',
       writeTools: 'Actions that need approval',
-      writeToolsHint: 'Unchecked actions run without asking, in every access mode.',
+      writeToolsHint: 'Unchecked actions run without asking, in every access mode. Changing a session model always needs approval.',
       allowTools: 'Extra tools the Leader may use',
       allowToolsHint: 'Tools registered by other plugins are hidden from Leader sessions unless checked here.',
       filter: 'Filter tools',
@@ -48,6 +48,7 @@ window.__ModuleLoader__.load({
       tool_create_workspace: 'Create workspace',
       tool_dispatch_task: 'Dispatch task',
       tool_cancel_task: 'Cancel task',
+      tool_set_session_model: 'Change session model',
     };
     const zh = {
       summary: 'Leader 预设：澄清需求、派发任务、转达结果。在这里配置根目录、审批和可用工具。',
@@ -64,7 +65,7 @@ window.__ModuleLoader__.load({
       fullAccess: '这些权限预设下免审批',
       fullAccessHint: 'Leader 会话的访问模式是其中之一时，写操作不再弹出审批卡片。',
       writeTools: '需要审批的操作',
-      writeToolsHint: '未勾选的操作在任何访问模式下都直接执行。',
+      writeToolsHint: '未勾选的操作在任何访问模式下都直接执行。更改会话模型始终需要审批。',
       allowTools: 'Leader 额外可用的工具',
       allowToolsHint: '其他插件注册的工具默认对 Leader 会话隐藏，勾选后放行。',
       filter: '筛选工具',
@@ -86,6 +87,7 @@ window.__ModuleLoader__.load({
       tool_create_workspace: '新建工作区',
       tool_dispatch_task: '派发任务',
       tool_cancel_task: '停止任务',
+      tool_set_session_model: '更改会话模型',
     };
 
     function useStore(subscribe, read) {
@@ -143,11 +145,12 @@ window.__ModuleLoader__.load({
         error ? h('p', { className: 'sl-err' }, error) : null);
     }
 
-    function Checks({ items, value, onChange, disabled }) {
+    function Checks({ items, value, onChange, disabled, locked = [] }) {
       const set = new Set(value);
+      const fixed = new Set(locked);
       return h('div', { className: 'sl-checks' }, items.map(item => h('label', { key: item.id },
         h('input', {
-          type: 'checkbox', checked: set.has(item.id), disabled,
+          type: 'checkbox', checked: fixed.has(item.id) || set.has(item.id), disabled: disabled || fixed.has(item.id),
           onChange: event => {
             const next = new Set(set);
             if (event.target.checked) next.add(item.id); else next.delete(item.id);
@@ -281,7 +284,7 @@ window.__ModuleLoader__.load({
       const workerValue = current('workerPreset') ?? '';
       if (workerValue && !workerChoices.some(row => row.id === workerValue)) workerChoices.push({ id: workerValue, name: workerValue });
       const permissionChoices = options?.permissionPresets ?? (current('fullAccessPresets') ?? []).map(id => ({ id, name: id }));
-      const writeChoices = (options?.leaderTools ?? ['create_workspace', 'dispatch_task', 'cancel_task']).map(id => ({ id, name: `${t(`tool_${id}`)} (${id})` }));
+      const writeChoices = (options?.leaderTools ?? ['create_workspace', 'dispatch_task', 'cancel_task', 'set_session_model']).map(id => ({ id, name: `${t(`tool_${id}`)} (${id})` }));
       const globalTools = options?.globalTools ?? [];
 
       return h('div', { className: 'sl-form' },
@@ -309,7 +312,7 @@ window.__ModuleLoader__.load({
           h(Checks, { items: permissionChoices, value: current('fullAccessPresets') ?? [], disabled: !writable, onChange: value => edit('fullAccessPresets', value) })),
 
         h(Field, { t, label: t('writeTools'), hint: t('writeToolsHint'), changed: changedFor('writeTools'), onReset: () => reset('writeTools'), disabled: !writable },
-          h(Checks, { items: writeChoices, value: current('writeTools') ?? [], disabled: !writable, onChange: value => edit('writeTools', value) })),
+          h(Checks, { items: writeChoices, value: current('writeTools') ?? [], disabled: !writable, locked: options?.alwaysWriteTools ?? ['set_session_model'], onChange: value => edit('writeTools', value) })),
 
         h(Field, { t, label: t('allowTools'), hint: t('allowToolsHint'), changed: changedFor('allowTools'), onReset: () => reset('allowTools'), disabled: !writable },
           h(ToolPicker, { t, tools: globalTools, value: current('allowTools') ?? [], disabled: !writable, onChange: value => edit('allowTools', value) })),
@@ -330,7 +333,22 @@ window.__ModuleLoader__.load({
 
     const inject = ['slots', 'locale', 'configForms'];
 
+    // DSH renders the approval headline as one paragraph. Leader approval texts
+    // put the target on separate lines, so keep their line breaks. This matches
+    // DSH internals (the card's data-approval-key attribute and the CSS-module
+    // class ending in "_headline"); if they change, cards fall back to one
+    // paragraph. It applies to every approval card; single-line texts look the
+    // same. See DESIGN.md.
+    const APPROVAL_CSS = '[data-approval-key] [class*="_headline"]{white-space:pre-line}';
+
     function apply(ctx) {
+      ctx.effect(() => {
+        const style = document.createElement('style');
+        style.dataset.superLeader = 'approval';
+        style.textContent = APPROVAL_CSS;
+        document.head.appendChild(style);
+        return () => style.remove();
+      }, 'super-leader: approval line breaks');
       ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'super-leader: dictionaries');
       const form = ctx.configForms.get(ENTRY_ID);
       const View = props => h(Card, { ctx, form, view: props?.view });

@@ -5,7 +5,20 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 
 export const DEFAULT_PRESET_ID = 'leader';
-export const DEFAULT_WRITE_TOOLS = ['create_workspace', 'dispatch_task', 'cancel_task'];
+// Write tools chosen in the original design. A user's saved writeTools list
+// was made from these.
+export const ORIGINAL_WRITE_TOOLS = ['create_workspace', 'dispatch_task', 'cancel_task'];
+// Write tools added later. They always need approval (unless the session has
+// full access), even when a saved writeTools list does not name them, so a list
+// saved before they existed cannot let them bypass approval.
+export const ADDED_WRITE_TOOLS = ['set_session_model'];
+export const DEFAULT_WRITE_TOOLS = [...ORIGINAL_WRITE_TOOLS, ...ADDED_WRITE_TOOLS];
+
+/** Tools that need approval: the saved list (or the default) united with ADDED_WRITE_TOOLS. */
+export function effectiveWriteTools(saved) {
+  const base = Array.isArray(saved) ? saved : DEFAULT_WRITE_TOOLS;
+  return new Set([...base, ...ADDED_WRITE_TOOLS]);
+}
 export const DEFAULT_FULL_ACCESS = ['danger-full-access'];
 export const REPORT_PREFIX = '[Leader report]';
 export const DIR_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -139,6 +152,7 @@ export function statusForTurnEnd(kind) {
     case 'aborted': return 'cancelled';
     case 'error': return 'failed';
     case 'blocked': return 'blocked';
+    case 'interrupted': return 'interrupted';
     default: return 'finished';
   }
 }
@@ -217,6 +231,7 @@ export const LEADER_PERSONA = `You are the Leader: a coordinator that manages th
 6. Stay at the coordination level. Do not try to read code, inspect files, or solve the task. read_session tells you what a worker did; it is for routing and briefing, not for doing the work. If you need technical facts that no session has, dispatch a short investigation task instead.
 7. Relay reports faithfully. When a "${REPORT_PREFIX}" message arrives, summarize the result for the user, and turn any open questions or decisions in it into questions for the user. Never make decisions on the user's behalf.
 8. Track work with task_status. Use cancel_task only when the user asks to stop a task.
+9. Models: list_sessions and read_session show which model each session uses. Change a worker's model (set_session_model, or the model fields of dispatch_task) only when the user asks for it, and use ids from list_models. If the user names a model loosely ("use Opus"), call list_models and confirm the exact model with ask_user_question when more than one matches.
 
 Reply in the user's language. Keep messages short and concrete.`;
 
@@ -342,4 +357,298 @@ export function lastRequestOf(events, max = 120) {
     if (text) return firstLine(text, max);
   }
   return null;
+}
+
+// ── model selection ─────────────────────────────────────────────────────────
+// Mirrors DSH's `modelSelection` projection (dsh-agent): a `model/selection`
+// event records a pending choice; the next `request/header` records what was
+// actually used and clears a pending choice it satisfied.
+
+function selectionOf(provider, model, reasoningEffort) {
+  if (typeof provider !== 'string' || !provider || typeof model !== 'string' || !model) return null;
+  return { provider, model, ...(typeof reasoningEffort === 'string' && reasoningEffort ? { reasoningEffort } : {}) };
+}
+
+export function sameSelection(a, b) {
+  if (!a || !b) return a === b;
+  return a.provider === b.provider && a.model === b.model && (a.reasoningEffort ?? null) === (b.reasoningEffort ?? null);
+}
+
+/** The model a stored session will use next, folded from its event log. */
+export function modelOfEvents(events) {
+  let lastUsed = null;
+  let pending = null;
+  for (const event of events) {
+    if (event.type === 'model/selection') {
+      const selected = selectionOf(event.data?.provider, event.data?.model, event.data?.reasoningEffort);
+      if (selected && !sameSelection(pending, selected)) pending = selected;
+    } else if (event.type === 'request/header') {
+      const header = event.data?.header ?? {};
+      const config = header.config ?? {};
+      const used = selectionOf(config.provider, config.model, header.adapterDefaults?.reasoningEffort === true ? undefined : config.reasoningEffort);
+      if (used) {
+        lastUsed = used;
+        if (sameSelection(pending, used)) pending = null;
+      }
+    }
+  }
+  return { current: pending ?? lastUsed, lastUsed, switchPending: pending !== null && !sameSelection(pending, lastUsed) };
+}
+
+/** Compact label such as `litellm/oneapi/Opus 5.5 (xhigh)`. */
+export function formatModel(selection) {
+  if (!selection) return null;
+  return `${selection.provider}/${selection.model}${selection.reasoningEffort ? ` (${selection.reasoningEffort})` : ''}`;
+}
+
+/** Validate tool arguments naming a model; returns a selection or undefined when none was given. */
+export function parseModelArgs(args, { required = false } = {}) {
+  const provider = args.provider;
+  const model = args.model;
+  const effort = args.reasoning_effort;
+  const given = [provider, model, effort].some(value => value !== undefined && value !== null && value !== '');
+  if (!given) {
+    if (required) throw new LeaderError('model_required', 'provider and model are required; call list_models for valid ids.');
+    return undefined;
+  }
+  for (const [key, value, max] of [['provider', provider, 200], ['model', model, 400], ['reasoning_effort', effort, 100]]) {
+    if (value === undefined || value === null || value === '') continue;
+    if (typeof value !== 'string') throw new LeaderError('invalid_model', `${key} must be a string`);
+    if (value.length > max) throw new LeaderError('invalid_model', `${key} is longer than ${max} characters`);
+  }
+  if (typeof provider !== 'string' || !provider || typeof model !== 'string' || !model) {
+    throw new LeaderError('invalid_model', 'Pass provider and model together (reasoning_effort is optional); call list_models for valid ids.');
+  }
+  return selectionOf(provider, model, effort);
+}
+
+// ── approval card text ──────────────────────────────────────────────────────
+
+/** Latest session title in an event log, or null. */
+export function titleOfEvents(events) {
+  let title = null;
+  for (const event of events) if (event.type === 'session/title' && typeof event.data?.title === 'string') title = event.data.title;
+  return title;
+}
+
+function placeLabel(lang, place) {
+  if (place.workspace) return `${place.workspace.title}${lang === 'zh' ? `（${place.workspace.path}）` : ` (${place.workspace.path})`}`;
+  if (place.cwd) return lang === 'zh' ? `不在已登记的工作区（目录 ${place.cwd}）` : `not in a registered workspace (directory ${place.cwd})`;
+  if (place.workspaceRef) return lang === 'zh' ? `找不到「${place.workspaceRef}」，派发会失败` : `"${place.workspaceRef}" not found; the dispatch will fail`;
+  return lang === 'zh' ? '未知' : 'unknown';
+}
+
+function sessionLabel(lang, place) {
+  if (place.kind === 'new') return lang === 'zh' ? '新建会话' : 'new session';
+  if (place.sessionMissing) return lang === 'zh' ? `找不到 ${place.sessionRef}，派发会失败` : `${place.sessionRef} not found; the dispatch will fail`;
+  const title = place.sessionTitle ?? (lang === 'zh' ? '（无标题）' : '(untitled)');
+  return lang === 'zh' ? `${title}（${place.sessionRef}）` : `${title} (${place.sessionRef})`;
+}
+
+function statusLabel(lang, place) {
+  if (place.kind === 'new' || place.sessionMissing) return undefined;
+  if (!place.running) return lang === 'zh' ? '空闲，收到后立即开始' : 'idle; starts right away';
+  if (place.mode === 'steer') return lang === 'zh' ? '正在运行，任务会注入当前轮次（steer）' : 'running; the task is injected into the current turn (steer)';
+  return lang === 'zh' ? '正在运行，任务排队，等当前轮次结束后开始（queue）' : 'running; the task is queued until the current turn ends (queue)';
+}
+
+/**
+ * Approval text for dispatch_task. The target block comes first so it is the
+ * most visible part of the card; the brief follows.
+ * @param place - { kind: 'new'|'existing', workspace?, workspaceRef?, cwd?, sessionRef?, sessionTitle?, sessionMissing?, running?, mode? }
+ */
+export function dispatchApprovalText({ title, brief, model, place }) {
+  const build = lang => {
+    const zh = lang === 'zh';
+    const tag = place.kind === 'new' ? (zh ? '【新建会话】' : '[New session] ') : (zh ? '【继续已有会话】' : '[Continue existing session] ');
+    const lines = [
+      `${tag}${zh ? `Leader 要派发任务「${title}」` : `Leader wants to dispatch "${title}"`}`,
+      `${zh ? '工作区：' : 'Workspace: '}${placeLabel(lang, place)}`,
+      `${zh ? '会话：' : 'Session: '}${sessionLabel(lang, place)}`,
+    ];
+    const status = statusLabel(lang, place);
+    if (status) lines.push(`${zh ? '状态：' : 'Status: '}${status}`);
+    if (model) lines.push(`${zh ? '模型：' : 'Model: '}${model}`);
+    return `${lines.join('\n')}\n\n${(brief ?? '').trim()}`;
+  };
+  return { en: build('en'), zh: build('zh') };
+}
+
+/**
+ * A short reason for clients (including dsh-im) that do not read displayReason.
+ * Keep the existing English prefix; never include the brief. Titles are bounded,
+ * while directory paths and session ids stay intact. Collapse whitespace so
+ * WeChat does not show escaped newlines from titles or paths.
+ */
+export function approvalReason(toolName, place) {
+  const line = value => String(value ?? '').replace(/[\s\u0000-\u001f\u007f-\u009f]+/gu, ' ').trim();
+  const short = value => {
+    const text = line(value);
+    return text.length > 64 ? `${text.slice(0, 63)}…` : text;
+  };
+  const prefix = `Leader action "${toolName}" requires approval`;
+  if (!place) return prefix;
+  const workspace = place.workspace
+    ? `${short(place.workspace.title)} (${line(place.workspace.path)})`
+    : place.cwd ? `未登记 (${line(place.cwd)})` : `${short(place.workspaceRef) || '未知'}（未找到工作区）`;
+  const session = place.kind === 'new'
+    ? '新建会话'
+    : `${short(place.sessionTitle) || '无标题'} (${line(place.sessionRef) || '未知 id'})${place.sessionMissing ? '（未找到）' : ''}`;
+  const status = place.kind === 'new' ? '新建后开始'
+    : place.sessionMissing ? '未知'
+    : !place.running ? '空闲'
+    : toolName === 'dispatch_task' ? (place.mode === 'steer' ? '注入当前轮次 (steer)' : '排队 (queue)')
+    : '运行中';
+  return `${prefix}; 工作区：${workspace}; 会话：${session}; 状态：${status}`;
+}
+
+/** Approval text for set_session_model. */
+export function modelApprovalText({ model, current, place }) {
+  const build = lang => {
+    const zh = lang === 'zh';
+    const lines = [
+      zh ? `Leader 要把会话的模型改为 ${model}` : `Leader wants to switch a session to ${model}`,
+      `${zh ? '会话：' : 'Session: '}${sessionLabel(lang, { ...place, kind: 'existing' })}`,
+      `${zh ? '工作区：' : 'Workspace: '}${placeLabel(lang, place)}`,
+    ];
+    if (current) lines.push(`${zh ? '当前模型：' : 'Current model: '}${current}`);
+    return lines.join('\n');
+  };
+  return { en: build('en'), zh: build('zh') };
+}
+
+// ── reconciliation ──────────────────────────────────────────────────────────
+// Report-back is driven by in-memory tracking (request id -> task, session ->
+// turn). If the host plugin is down when a worker's turn ends, that turn's
+// report never reaches the ledger and the task stays "running". On startup the
+// host reconciles every queued/running task against the worker's session log.
+
+export const OPEN_STATUSES = new Set(['queued', 'running']);
+
+/** Fold the durable inbox and claims, including claims that precede user/message. */
+export function requestLocation(events, requestId) {
+  if (!requestId) return { pending: false };
+  const inbox = { 'next-turn': [], 'next-step': [] };
+  let openTurn;
+  let turn;
+  for (const event of events) {
+    const data = event.data ?? {};
+    if (event.type === 'turn/start') openTurn = data.turn;
+    else if (event.type === 'turn/end' && data.turn === openTurn) openTurn = undefined;
+    else if (event.type === 'agent/inbox/spliced' && inbox[data.target]) {
+      const removed = inbox[data.target].splice(data.start, data.removedCount ?? 0, ...(data.inserted ?? []));
+      if (data.outcome !== 'canceled' && openTurn !== undefined && removed.some(message => message.source?.rpcId === requestId)) turn = openTurn;
+    } else if (event.type === 'user/message' && data.source?.rpcId === requestId && openTurn !== undefined) turn = openTurn;
+  }
+  return {
+    ...(turn === undefined ? {} : { turn }),
+    pending: Object.values(inbox).some(messages => messages.some(message => message.source?.rpcId === requestId)),
+  };
+}
+
+export function turnOfRequest(events, requestId) {
+  return requestLocation(events, requestId).turn;
+}
+
+/** The turn's end event and its final assistant text, read from the log. */
+export function turnOutcome(events, turn) {
+  let inside = false;
+  let text = '';
+  for (const event of events) {
+    if (event.type === 'turn/start') {
+      inside = event.data?.turn === turn;
+      if (inside) text = '';
+      continue;
+    }
+    if (!inside) continue;
+    if (event.type === 'tool/call') text = '';
+    if (event.type === 'assistant/message') {
+      const content = event.data?.message?.content;
+      const value = textOf(content);
+      if (value && !event.data?.interrupted && !content.some(block => block.type === 'tool-call')) text = value;
+    } else if (event.type === 'turn/end' && event.data?.turn === turn) {
+      return { ended: true, kind: event.data?.reason?.kind, time: event.time, text, error: event.data?.reason?.error?.message };
+    }
+  }
+  return { ended: false, text };
+}
+
+/**
+ * Decide what to do with one open task.
+ * @param task - ledger task (status queued or running).
+ * @param events - worker session log, or undefined when it cannot be read.
+ * @param live - { running: boolean, lastTurn: number } for a loaded worker Agent, or undefined.
+ * @returns one of
+ *   { action: 'skip' }                         task is not open
+ *   { action: 'track-turn', turn }             the worker is running this turn now: keep waiting
+ *   { action: 'track-request' }                the brief is still in the durable inbox
+ *   { action: 'defer' }                        the log is unreadable: do not guess
+ *   { action: 'close', patch }                 write a terminal state with patch.reconciled set
+ */
+export function reconcileTask(task, events, live, { now = new Date().toISOString(), reportMaxChars = 4000 } = {}) {
+  if (!OPEN_STATUSES.has(task.status)) return { action: 'skip' };
+  const reconciled = reason => ({ at: now, reason });
+  if (events === undefined) return { action: 'defer' };
+  if (events === null) return {
+    action: 'close',
+    patch: { status: 'interrupted', finishedAt: null, report: '', reportSource: 'none', reconciled: reconciled('worker-session-missing') },
+  };
+  const location = requestLocation(events, task.requestId);
+  const turn = location.turn ?? (Number.isInteger(task.turn) ? task.turn : undefined);
+  if (turn === undefined) {
+    if (location.pending) return { action: 'track-request' };
+    return {
+      action: 'close',
+      patch: { status: 'interrupted', finishedAt: null, report: '', reportSource: 'none', reconciled: reconciled('request-not-pending') },
+    };
+  }
+  const outcome = turnOutcome(events, turn);
+  if (outcome.ended) {
+    const text = truncate([outcome.text, outcome.error ? `Error: ${outcome.error}` : ''].filter(Boolean).join('\n\n'), reportMaxChars);
+    return {
+      action: 'close',
+      patch: {
+        status: statusForTurnEnd(outcome.kind),
+        turn,
+        finishedAt: outcome.time === undefined ? null : new Date(outcome.time).toISOString(),
+        report: text,
+        reportSource: text ? 'recovered-from-log' : 'none',
+        reconciled: reconciled('turn-ended-while-untracked'),
+      },
+    };
+  }
+  if (live?.running === true && live.lastTurn === turn) return { action: 'track-turn', turn };
+  return {
+    action: 'close',
+    patch: { status: 'interrupted', turn, finishedAt: null, report: '', reportSource: 'none', reconciled: reconciled('turn-never-ended') },
+  };
+}
+
+/**
+ * How the task's report stands, for task_status.
+ * pending: still open · delivered: sent to the Leader · undelivered: captured
+ * live but sending it to the Leader failed · recovered: the Leader never got
+ * it; the text was rebuilt from the worker log · lost: no report exists.
+ */
+export function reportState(task) {
+  if (OPEN_STATUSES.has(task.status)) return 'pending';
+  if (task.reportedAt) return 'delivered';
+  if (task.reconciled) return task.reportSource === 'recovered-from-log' ? 'recovered' : 'lost';
+  return task.report ? 'undelivered' : 'lost';
+}
+
+const REPORT_NOTES = {
+  recovered: 'The Leader never received this report: the plugin was not tracking the task when the worker\'s turn ended. The report text was recovered afterwards from the worker session log.',
+  lost: 'No report exists. The plugin was not tracking the task when it ended, and the worker log has no final reply for it (or the turn never ended).',
+  undelivered: 'The report was captured, but sending it to the Leader failed.',
+};
+
+export function reportNote(task) {
+  const state = reportState(task);
+  const note = REPORT_NOTES[state];
+  if (!note) return undefined;
+  if (task.reconciled?.reason === 'turn-never-ended') return 'The worker\'s turn never ended (the host stopped mid-turn). Its work may be partial; no report exists. Nothing was re-run.';
+  if (task.reconciled?.reason === 'worker-session-missing') return 'The worker session no longer exists. No report can be recovered. Nothing was re-run.';
+  if (task.reconciled?.reason === 'request-not-pending') return 'The task request was neither consumed nor left in the worker inbox. Delivery was interrupted or the queued request was removed; no report exists. Nothing was re-run.';
+  return note;
 }

@@ -191,3 +191,110 @@ test('lastRequestOf returns the latest user or agent request', () => {
   assert.equal(lastRequestOf([userMsg('first'), userMsg('context', 'runtime-context')]), 'first');
   assert.equal(lastRequestOf([]), null);
 });
+
+import { modelOfEvents, formatModel, parseModelArgs, sameSelection } from '../src/core.js';
+
+const header = (provider, model, reasoningEffort, adapterDefaults) => ({ type: 'request/header', data: { header: { config: { provider, model, ...(reasoningEffort ? { reasoningEffort } : {}) }, ...(adapterDefaults ? { adapterDefaults } : {}) } } });
+const pick = (provider, model, reasoningEffort) => ({ type: 'model/selection', data: { provider, model, ...(reasoningEffort ? { reasoningEffort } : {}) } });
+
+test('modelOfEvents follows request headers and pending selections', () => {
+  assert.deepEqual(modelOfEvents([]), { current: null, lastUsed: null, switchPending: false });
+  const used = modelOfEvents([header('litellm', 'flash'), header('litellm', 'opus', 'high')]);
+  assert.deepEqual(used.current, { provider: 'litellm', model: 'opus', reasoningEffort: 'high' });
+  assert.equal(used.switchPending, false);
+
+  const pending = modelOfEvents([header('litellm', 'flash'), pick('deepseek', 'v4')]);
+  assert.deepEqual(pending.current, { provider: 'deepseek', model: 'v4' });
+  assert.deepEqual(pending.lastUsed, { provider: 'litellm', model: 'flash' });
+  assert.equal(pending.switchPending, true);
+
+  const applied = modelOfEvents([pick('deepseek', 'v4'), header('deepseek', 'v4')]);
+  assert.equal(applied.switchPending, false);
+  assert.deepEqual(applied.current, { provider: 'deepseek', model: 'v4' });
+
+  // An adapter-defaulted effort is not a user choice.
+  assert.deepEqual(modelOfEvents([header('x', 'm', 'high', { reasoningEffort: true })]).current, { provider: 'x', model: 'm' });
+  // Malformed events are ignored.
+  assert.equal(modelOfEvents([{ type: 'model/selection', data: { provider: '' } }, { type: 'request/header', data: {} }]).current, null);
+});
+
+test('formatModel and sameSelection', () => {
+  assert.equal(formatModel(null), null);
+  assert.equal(formatModel({ provider: 'litellm', model: 'oneapi/Opus 5.5', reasoningEffort: 'xhigh' }), 'litellm/oneapi/Opus 5.5 (xhigh)');
+  assert.equal(formatModel({ provider: 'p', model: 'm' }), 'p/m');
+  assert.ok(sameSelection({ provider: 'p', model: 'm' }, { provider: 'p', model: 'm' }));
+  assert.ok(!sameSelection({ provider: 'p', model: 'm' }, { provider: 'p', model: 'm', reasoningEffort: 'low' }));
+  assert.ok(sameSelection(null, null));
+  assert.ok(!sameSelection(null, { provider: 'p', model: 'm' }));
+});
+
+test('parseModelArgs', () => {
+  assert.equal(parseModelArgs({}), undefined);
+  assert.throws(() => parseModelArgs({}, { required: true }), { code: 'model_required' });
+  assert.deepEqual(parseModelArgs({ provider: 'p', model: 'm' }), { provider: 'p', model: 'm' });
+  assert.deepEqual(parseModelArgs({ provider: 'p', model: 'm', reasoning_effort: 'low' }), { provider: 'p', model: 'm', reasoningEffort: 'low' });
+  assert.throws(() => parseModelArgs({ model: 'm' }), { code: 'invalid_model' });
+  assert.throws(() => parseModelArgs({ reasoning_effort: 'low' }), { code: 'invalid_model' });
+  assert.throws(() => parseModelArgs({ provider: 1, model: 'm' }), { code: 'invalid_model' });
+});
+
+import { dispatchApprovalText, modelApprovalText, titleOfEvents } from '../src/core.js';
+
+test('titleOfEvents returns the latest title', () => {
+  assert.equal(titleOfEvents([]), null);
+  assert.equal(titleOfEvents([{ type: 'session/title', data: { title: 'a' } }, { type: 'x' }, { type: 'session/title', data: { title: 'b' } }]), 'b');
+});
+
+test('dispatch approval text leads with the target', () => {
+  const ws = { title: 'file-stat', path: '/w/file-stat' };
+  const existing = dispatchApprovalText({
+    title: 'Add --sort', brief: '  Do it.  ', model: undefined,
+    place: { kind: 'existing', workspace: ws, sessionRef: 'session-1', sessionTitle: 'T-1 build tool', running: true, mode: 'queue' },
+  });
+  assert.equal(existing.zh.split('\n\n')[0], [
+    '【继续已有会话】Leader 要派发任务「Add --sort」',
+    '工作区：file-stat（/w/file-stat）',
+    '会话：T-1 build tool（session-1）',
+    '状态：正在运行，任务排队，等当前轮次结束后开始（queue）',
+  ].join('\n'));
+  assert.ok(existing.zh.endsWith('\n\nDo it.'));
+  assert.match(existing.en, /^\[Continue existing session\] Leader wants to dispatch "Add --sort"\nWorkspace: file-stat \(\/w\/file-stat\)\nSession: T-1 build tool \(session-1\)\nStatus: running; the task is queued/);
+
+  const steer = dispatchApprovalText({ title: 't', brief: 'b', place: { kind: 'existing', workspace: ws, sessionRef: 's', sessionTitle: null, running: true, mode: 'steer' } });
+  assert.match(steer.zh, /会话：（无标题）（s）\n状态：正在运行，任务会注入当前轮次（steer）/);
+  const idle = dispatchApprovalText({ title: 't', brief: 'b', place: { kind: 'existing', workspace: ws, sessionRef: 's', sessionTitle: 'x', running: false, mode: 'steer' } });
+  assert.match(idle.en, /Status: idle; starts right away/);
+
+  const fresh = dispatchApprovalText({ title: 't', brief: 'b', model: 'litellm/pro (low)', place: { kind: 'new', workspaceRef: 'w-id', workspace: ws } });
+  assert.equal(fresh.zh.split('\n\n')[0], '【新建会话】Leader 要派发任务「t」\n工作区：file-stat（/w/file-stat）\n会话：新建会话\n模型：litellm/pro (low)');
+  assert.doesNotMatch(fresh.zh, /状态：/);
+
+  const missingWs = dispatchApprovalText({ title: 't', brief: 'b', place: { kind: 'new', workspaceRef: 'nope' } });
+  assert.match(missingWs.zh, /工作区：找不到「nope」，派发会失败/);
+  const missingSession = dispatchApprovalText({ title: 't', brief: 'b', place: { kind: 'existing', sessionRef: 'gone', sessionMissing: true } });
+  assert.match(missingSession.en, /Session: gone not found; the dispatch will fail/);
+  assert.doesNotMatch(missingSession.en, /Status:/);
+  const loose = dispatchApprovalText({ title: 't', brief: 'b', place: { kind: 'existing', cwd: '/tmp/x', sessionRef: 's', sessionTitle: 'x', running: false } });
+  assert.match(loose.zh, /工作区：不在已登记的工作区（目录 \/tmp\/x）/);
+});
+
+test('model approval text names the session and current model', () => {
+  const text = modelApprovalText({ model: 'litellm/pro (low)', current: 'litellm/flash', place: { sessionRef: 'session-1', sessionTitle: 'Build', workspace: { title: 'w', path: '/w' } } });
+  assert.equal(text.zh, 'Leader 要把会话的模型改为 litellm/pro (low)\n会话：Build（session-1）\n工作区：w（/w）\n当前模型：litellm/flash');
+  assert.match(text.en, /^Leader wants to switch a session to litellm\/pro \(low\)\nSession: Build \(session-1\)/);
+});
+
+import { effectiveWriteTools, ORIGINAL_WRITE_TOOLS, ADDED_WRITE_TOOLS, DEFAULT_WRITE_TOOLS } from '../src/core.js';
+
+test('write tools: default, saved lists, and the always-added tools', () => {
+  assert.deepEqual(ORIGINAL_WRITE_TOOLS, ['create_workspace', 'dispatch_task', 'cancel_task']);
+  assert.deepEqual(DEFAULT_WRITE_TOOLS, [...ORIGINAL_WRITE_TOOLS, 'set_session_model']);
+  assert.deepEqual([...effectiveWriteTools(undefined)].sort(), [...DEFAULT_WRITE_TOOLS].sort());
+  // A list saved before set_session_model existed still gets it.
+  assert.deepEqual([...effectiveWriteTools(['create_workspace', 'dispatch_task', 'cancel_task'])].sort(), [...DEFAULT_WRITE_TOOLS].sort());
+  // A user who turned approval off for some original tools keeps that choice.
+  assert.deepEqual([...effectiveWriteTools(['dispatch_task'])].sort(), ['dispatch_task', 'set_session_model']);
+  assert.deepEqual([...effectiveWriteTools([])], ADDED_WRITE_TOOLS);
+  // Union, not duplication.
+  assert.equal(effectiveWriteTools(['set_session_model', 'dispatch_task']).size, 2);
+});

@@ -4,6 +4,8 @@
 # 2. `preset-leader` declares the Leader agent preset. Its sessions see only
 #    the Leader tools, ask_user_question, and compaction; every global tool
 #    from other plugins is hidden unless listed in super-leader.allowTools.
+#    It loads AGENTS.md / CLAUDE.md instructions (user-global and workspace)
+#    the same way the standard preset does.
 - insert:
     - id: super-leader
       name: dsh-super-leader
@@ -17,6 +19,10 @@
         plugins:
           - id: leader-tools
             name: dsh-super-leader/tools
+          - id: agent-instructions
+            name: '@deepseek-ai/dsh-agent-instructions'
+            config:
+              maxBytes: 65536
           - id: time-context
             name: '@deepseek-ai/dsh-time-context'
           - id: tool-ask-user

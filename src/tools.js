@@ -1,6 +1,6 @@
 // Preset-scoped half: the Leader tools and persona. Mounted only inside the
 // Leader agent preset, so only Leader sessions see these tools.
-import { LEADER_PERSONA } from './core.js';
+import { LEADER_PERSONA, parseModelArgs } from './core.js';
 import { requireRuntime } from './runtime.js';
 
 export const name = 'super-leader-tools';
@@ -81,9 +81,9 @@ export function apply(ctx, config = {}) {
 
   ctx.tools.register({
     name: 'list_sessions',
-    description: 'List top-level DSH sessions (newest first): id, title, workspace, whether it is running, last update, the first line of its latest request, and the latest task the Leader dispatched to it. Titles are often stale; use read_session to see what a session actually did. Read-only.',
+    description: 'List top-level DSH sessions (newest first): id, title, workspace, whether it is running, last update, the model it will use next, the first line of its latest request, and the latest task the Leader dispatched to it. Titles are often stale; use read_session to see what a session actually did. Read-only.',
     parameters: objectSchema({
-      workspace_id: { type: 'string', description: 'Only sessions in this workspace.' },
+      workspace_id: { type: 'string', description: 'Only sessions in this workspace (id or exact title).' },
       query: { type: 'string', description: 'Case-insensitive substring filter on title or directory.' },
       limit: { type: 'integer', description: 'Maximum rows, 1-100; default 30.' },
     }),
@@ -99,7 +99,7 @@ export function apply(ctx, config = {}) {
 
   ctx.tools.register({
     name: 'read_session',
-    description: 'Read what a session has actually done: its recent requests and the agent\'s replies, a one-line list of earlier requests, its todo list, files it wrote or edited, and Leader tasks sent to it. Read-only. Call this before dispatching to an existing session, so the brief only needs to state what is new.',
+    description: 'Read what a session has actually done (and which model it uses): its recent requests and the agent\'s replies, a one-line list of earlier requests, its todo list, files it wrote or edited, and Leader tasks sent to it. Read-only. Call this before dispatching to an existing session, so the brief only needs to state what is new.',
     parameters: objectSchema({
       session_id: { type: 'string', description: 'Session id from list_sessions.' },
       recent_turns: { type: 'integer', description: 'How many latest exchanges to show in full, 1-10; default 4.' },
@@ -116,7 +116,7 @@ export function apply(ctx, config = {}) {
 
   ctx.tools.register({
     name: 'task_status',
-    description: 'Show tasks this Leader dispatched: status (queued, running, completed, blocked, failed, cancelled), worker session, and the worker report. Read-only.',
+    description: 'Show tasks this Leader dispatched: status (queued, running, completed, blocked, failed, cancelled, interrupted), report_state (pending, delivered, recovered, undelivered, lost), worker session, and the worker report. recovered means you never received the report and its text was rebuilt from the worker log; lost means there is no report. Tell the user when a report was recovered or lost. Read-only.',
     parameters: objectSchema({
       task_id: { type: 'string', description: 'One task id such as T-3f9a01. Omit to list recent tasks.' },
       include_report: { type: 'boolean', description: 'Include full reports when listing; default false (a single task always includes it).' },
@@ -166,13 +166,16 @@ export function apply(ctx, config = {}) {
       title: { type: 'string', description: 'Short task title (also used as the new session title).' },
       brief: { type: 'string', description: 'The complete, self-contained task brief.' },
       session_id: { type: 'string', description: 'Existing worker session to continue. Exclusive with workspace_id.' },
-      workspace_id: { type: 'string', description: 'Workspace in which to create a new worker session. Exclusive with session_id.' },
+      workspace_id: { type: 'string', description: 'Workspace (id, or exact title) in which to create a new worker session. Exclusive with session_id.' },
       mode: { type: 'string', enum: ['queue', 'steer'], description: 'For a busy existing session: queue (default) waits for its current turn; steer injects into the running turn.' },
+      provider: { type: 'string', description: 'Optional: run the worker on this provider (with model). Only when the user asked for a specific model; ids come from list_models.' },
+      model: { type: 'string', description: 'Optional: model id, together with provider.' },
+      reasoning_effort: { type: 'string', description: 'Optional reasoning effort for that model, from list_models.' },
     }, ['title', 'brief']),
     output: { schema: OPEN_OBJECT, render },
     presentCall: args => card(`Dispatch: ${args?.title ?? ''}`.trim(), 'other', args?.brief),
     execute: (args, exec) => run(exec, async (rt, leader) => {
-      onlyKeys(args, ['title', 'brief', 'session_id', 'workspace_id', 'mode']);
+      onlyKeys(args, ['title', 'brief', 'session_id', 'workspace_id', 'mode', 'provider', 'model', 'reasoning_effort']);
       const sessionId = str(args, 'session_id');
       const workspaceId = str(args, 'workspace_id');
       if ((sessionId === undefined) === (workspaceId === undefined)) throw new Error('pass exactly one of session_id or workspace_id');
@@ -183,6 +186,43 @@ export function apply(ctx, config = {}) {
         title: str(args, 'title', { required: true, max: 120 }),
         brief: str(args, 'brief', { required: true, max: 60000 }),
         sessionId, workspaceId, mode,
+        model: parseModelArgs(args),
+      }, exec.signal);
+    }),
+  });
+
+  ctx.tools.register({
+    name: 'list_models',
+    description: 'List the providers and models this DSH can route to, with each model\'s reasoning efforts, and the host default model. Read-only. Use it before naming a model in dispatch_task or set_session_model.',
+    parameters: objectSchema({
+      provider: { type: 'string', description: 'Only this provider.' },
+      query: { type: 'string', description: 'Case-insensitive substring filter on model id or name.' },
+    }),
+    output: { schema: OPEN_OBJECT, render },
+    presentCall: args => card('List models', 'read', args?.query ?? args?.provider),
+    execute: (args, exec) => run(exec, async rt => {
+      onlyKeys(args, ['provider', 'query']);
+      return rt.listModels({ provider: str(args, 'provider', { max: 200 }), query: str(args, 'query', { max: 200 }) }, exec.signal);
+    }),
+  });
+
+  ctx.tools.register({
+    name: 'set_session_model',
+    description: 'Change the model an existing worker session uses from its next step on (session-level; the host default model is not changed). Use only when the user asked for it. Requires user approval unless the session has full access.',
+    parameters: objectSchema({
+      session_id: { type: 'string', description: 'Worker session id from list_sessions.' },
+      provider: { type: 'string', description: 'Provider id from list_models.' },
+      model: { type: 'string', description: 'Model id from list_models.' },
+      reasoning_effort: { type: 'string', description: 'Optional reasoning effort supported by that model.' },
+    }, ['session_id', 'provider', 'model']),
+    output: { schema: OPEN_OBJECT, render },
+    presentCall: args => card(`Set model: ${args?.model ?? ''}`.trim(), 'other', args?.session_id),
+    execute: (args, exec) => run(exec, async (rt, leader) => {
+      onlyKeys(args, ['session_id', 'provider', 'model', 'reasoning_effort']);
+      return rt.setSessionModel({
+        sessionId: str(args, 'session_id', { required: true, max: 200 }),
+        model: parseModelArgs(args, { required: true }),
+        leader,
       }, exec.signal);
     }),
   });
