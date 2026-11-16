@@ -12,8 +12,6 @@ The Leader does not write code or edit files. It clarifies the request, routes i
 
 ## What a conversation looks like
 
-From WeChat, QQ, Telegram or any other chat that [`@xmanrui/dsh-im`](https://www.npmjs.com/package/@xmanrui/dsh-im) connects to DSH:
-
 > **You:** Add a `--sort` option to the file-stat tool. Sort by size by default.
 >
 > **Leader:** *(reads the session that built file-stat)* That session wrote `file_stat.py` and its README two days ago and is idle. Should it continue there, or start a new session?
@@ -76,7 +74,7 @@ The Leader can create workspaces only under `~/Work` by default. Change that in 
 
 The Leader works well as the one session your chat bot talks to. Setup with `@xmanrui/dsh-im` (behavior described for 5.10.0):
 
-1. **Bind the chat to the Leader.** Start a Leader session, then bind your chat to it, for example with dsh-im's `/session <ID>`.
+1. **Make the bot start Leader sessions.** In dsh-im's settings, open your bot and set **Agent Preset** to **Leader**. The setting applies to new sessions only, so send `/new` in the chat, then a normal message. From then on, each new conversation with that bot is a Leader session. The bot's workspace setting is the Leader's working directory, so that is where its `MEMORY.md` lives.
 2. **Turn on report delivery.** Settings → IM bots → General settings → Delivery → **Session sync**: check **Deliver model answers** and click **Save delivery settings**. Without it, the Leader's replies to worker reports appear only in the Web UI (details below).
 3. **Optionally allow dsh-im's tools.** For example `dsh_im_return_file` lets the Leader send a worker's output file to the chat, and `dsh_im_group_history` / `dsh_im_group_file` let it read group messages and files. Add them under **Extra tools the Leader may use**.
 4. **Choose how approvals work.** In Full access the Leader dispatches without asking, which is the smoothest from a phone. Otherwise each dispatch needs an approval, which dsh-im can show in private chats with session sync enabled on that delivery target.

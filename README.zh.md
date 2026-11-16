@@ -12,8 +12,6 @@ Leader 自己不写代码、不改文件。它负责把需求问清楚、决定�
 
 ## 用起来是什么样
 
-在微信、QQ、Telegram 等任何通过 [`@xmanrui/dsh-im`](https://www.npmjs.com/package/@xmanrui/dsh-im) 接入 DSH 的聊天里：
-
 > **你：** 给 file-stat 那个小工具加个 `--sort` 参数，默认按大小排序。
 >
 > **Leader：**（读取当初做 file-stat 的会话）那个会话两天前写好了 `file_stat.py` 和 README，现在空闲。在原会话里继续，还是新开一个会话？
@@ -76,7 +74,7 @@ dsh plugin --profile web add dsh-super-leader
 
 Leader 很适合作为聊天机器人唯一对接的会话。配合 `@xmanrui/dsh-im` 的设置如下（按 5.10.0 的行为描述）：
 
-1. **把聊天绑定到 Leader。** 新建一个 Leader 会话，再把聊天绑定过去，例如用 dsh-im 的 `/session <ID>`。
+1. **让机器人开 Leader 会话。** 在 dsh-im 的设置里打开你的机器人，把 **Agent Preset** 选为 **Leader**。这个设置只对新会话生效，所以在聊天里先发 `/new`，再发一条普通消息。之后和这个机器人的每个新对话都是 Leader 会话。机器人设置的工作区就是 Leader 的工作目录，`MEMORY.md` 也放在那里。
 2. **打开回报推送。** 设置 → IM机器人 → 通用设置 → 投递 → **会话同步**，勾选 **投递模型回答**，再点 **保存投递设置**。不开的话，Leader 转达下属回报的回复只会出现在 Web 界面里（原因见下文）。
 3. **按需开放 dsh-im 的工具。** 例如 `dsh_im_return_file` 让 Leader 把下属产出的文件发到聊天里，`dsh_im_group_history` / `dsh_im_group_file` 让它读取群消息和群文件。在 **Leader 额外可用的工具** 里勾选即可。
 4. **决定审批方式。** 完全权限下 Leader 直接派发，在手机上最省事。其他模式下每次派发都要审批；在私聊中、并且投递目标开启了会话同步时，dsh-im 可以把审批推到聊天里。
