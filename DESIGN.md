@@ -54,6 +54,10 @@ README 中以 Mnemon 的 `mnemon_runtime_memory`、`mnemon_document_search`、`m
 | `list_models` | 读 | 列出 `llm` 服务能路由的服务商和模型，附推理强度和主机默认模型 |
 | `set_session_model` | 写 | 改已有下属会话的模型（会话级，不改主机默认） |
 | `cancel_task` | 写 | 停止下属会话当前正在执行的轮次 |
+| `read_memory` | 读 | 读取会话工作目录下的 `MEMORY.md`，不存在时返回空内容 |
+| `write_memory` | 写（免审批） | 追加或整体重写 `MEMORY.md`，原子写入（临时文件 + rename），上限 32,000 字符 |
+
+记忆工具在 `src/memory.js`，不依赖宿主插件：工作目录取自 `workingDirectory` 服务（`agent-instructions` 已依赖它），缺失时退回会话头的 `cwd`。它只写 Leader 自己目录下的这一个文件，所以默认不在 `writeTools` 候选里。人格提示第 10 条要求对话开始时读一次，只存偏好、工作区/会话分工和用户决定，不存任务进度、回报和密钥。
 
 ## 审批规则
 

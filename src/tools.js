@@ -2,6 +2,7 @@
 // Leader agent preset, so only Leader sessions see these tools.
 import { LEADER_PERSONA, parseModelArgs } from './core.js';
 import { requireRuntime } from './runtime.js';
+import { MEMORY_FILE, MEMORY_MAX_CHARS, readMemory, writeMemory } from './memory.js';
 
 export const name = 'super-leader-tools';
 export const inject = ['tools', 'systemPrompt'];
@@ -49,6 +50,24 @@ async function run(exec, body) {
   if (leader === undefined) return { ok: false, error: 'no_agent', message: 'This tool must be called by an agent.' };
   try {
     return jsonSafe({ ok: true, ...(await body(requireRuntime(), leader)) });
+  } catch (error) {
+    if (exec.signal?.aborted) throw error;
+    return { ok: false, error: error?.code ?? 'failed', message: error?.message ?? String(error) };
+  }
+}
+
+/** The calling session's working directory (where MEMORY.md lives). */
+async function sessionCwd(ctx, exec) {
+  const owner = ctx.get('workingDirectory');
+  if (owner !== undefined) return owner.ensure(exec.agent, exec.signal);
+  return exec.agent.session?.header?.cwd;
+}
+
+/** Like run(), for tools that need only the session, not the host plugin. */
+async function runLocal(exec, body) {
+  if (exec.agent === undefined) return { ok: false, error: 'no_agent', message: 'This tool must be called by an agent.' };
+  try {
+    return jsonSafe({ ok: true, ...(await body()) });
   } catch (error) {
     if (exec.signal?.aborted) throw error;
     return { ok: false, error: error?.code ?? 'failed', message: error?.message ?? String(error) };
@@ -236,6 +255,34 @@ export function apply(ctx, config = {}) {
     execute: (args, exec) => run(exec, async (rt, leader) => {
       onlyKeys(args, ['task_id']);
       return rt.cancel({ taskId: str(args, 'task_id', { required: true, max: 32 }), leader });
+    }),
+  });
+
+  ctx.tools.register({
+    name: 'read_memory',
+    description: `Read your memory: the ${MEMORY_FILE} file in this session's working directory. It holds what you chose to remember across conversations (user preferences, which workspace or session handles what, standing decisions). A missing file reads as empty. Read-only.`,
+    parameters: objectSchema({}),
+    output: { schema: OPEN_OBJECT, render },
+    presentCall: () => card('Read memory', 'read', MEMORY_FILE),
+    execute: (args, exec) => runLocal(exec, async () => {
+      onlyKeys(args ?? {}, []);
+      return readMemory(await sessionCwd(ctx, exec));
+    }),
+  });
+
+  ctx.tools.register({
+    name: 'write_memory',
+    description: `Save to your memory, the ${MEMORY_FILE} file in this session's working directory. mode "append" (default) adds content as a new paragraph at the end; mode "replace" rewrites the whole file, so read_memory first and keep what is still true. Store durable facts only: user preferences, workspace and session roles, decisions the user made. Do not store task progress, reports, or secrets. Limit: ${MEMORY_MAX_CHARS} characters.`,
+    parameters: objectSchema({
+      content: { type: 'string', description: 'Markdown to append, or the complete new file for replace (an empty string clears it).' },
+      mode: { type: 'string', enum: ['append', 'replace'], description: 'append (default) or replace.' },
+    }, ['content']),
+    output: { schema: OPEN_OBJECT, render },
+    presentCall: args => card(args?.mode === 'replace' ? 'Rewrite memory' : 'Add to memory', 'edit', args?.content),
+    execute: (args, exec) => runLocal(exec, async () => {
+      onlyKeys(args, ['content', 'mode']);
+      if (typeof args.content !== 'string') throw new Error('content must be a string');
+      return writeMemory(await sessionCwd(ctx, exec), { content: args.content, mode: args.mode ?? 'append' });
     }),
   });
 }
