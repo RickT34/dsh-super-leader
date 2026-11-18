@@ -102,13 +102,17 @@ export function apply(ctx, config) {
     }
   }
 
+  // agents.roots() exists only in some DSH releases (removed by 0.2.2-rc.5);
+  // agents.list() exists in all supported ones. isLeader() filters the result.
+  const liveAgents = () => ctx.agents.list();
+
   ctx.on('agent/created', ({ agent }) => { denyGlobals(agent); });
   ctx.on('agent-preset/selected', sessionId => {
     const agent = ctx.agents.get(sessionId);
     if (agent !== undefined) queueMicrotask(() => denyGlobals(agent));
   });
   ctx.on('tools/change', () => {
-    for (const agent of ctx.agents.roots()) if (isLeader(agent)) denyGlobals(agent);
+    for (const agent of liveAgents()) if (isLeader(agent)) denyGlobals(agent);
   });
   ctx.on('agent/disposed', ({ agent }) => { restricted.delete(agent); });
   // Settings edits land between steps; re-check before each Leader step.
@@ -118,7 +122,7 @@ export function apply(ctx, config) {
   });
   ctx.on('settings/document-updated', ns => {
     if (ns !== 'super-leader') return;
-    for (const agent of ctx.agents.roots()) if (isLeader(agent)) denyGlobals(agent);
+    for (const agent of liveAgents()) if (isLeader(agent)) denyGlobals(agent);
   });
 
   // ── approval gate ────────────────────────────────────────────────────────

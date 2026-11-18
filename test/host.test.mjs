@@ -27,7 +27,7 @@ async function host(t, tasks = {}, overrides = {}, config = {}) {
   };
   const ctx = {
     logger: { warn() {}, info() {} },
-    agents: { withoutInitiator: callback => callback(), get: id => agents.get(id), roots: () => [], turnBoundaryOf: session => ({ lastTurn: session.turn }) },
+    agents: { withoutInitiator: callback => callback(), get: id => agents.get(id), list: () => [], turnBoundaryOf: session => ({ lastTurn: session.turn }) },
     sessions: { get: id => sessions.get(id), flush: async () => {} },
     tools: { view: () => ({ visible: new Map() }) },
     get: name => services[name],
@@ -193,7 +193,7 @@ test('global tools from any memory plugin require explicit allowTools entries', 
   const h = await host(t, {}, {}, { allowTools: { get: () => allowTools } });
   const names = ['mnemon_runtime_memory', 'mnemon_document_search', 'mnemon_recall', 'other_memory_read', 'other_memory_write', 'bash', 'explicit_extra'];
   h.ctx.tools.view = () => ({ visible: new Map(names.map(name => [name, {}])) });
-  h.ctx.agents.roots = () => [h.leader];
+  h.ctx.agents.list = () => [h.leader];
   const layers = new Set();
   const denied = name => [...layers].some(layer => layer.has(name));
   h.leader.ctx.tools = { restrict({ deny }) {
