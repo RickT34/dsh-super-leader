@@ -8,6 +8,8 @@ Each DSH session works in one workspace. Once you have several projects going, y
 
 The Leader does not write code or edit files. It clarifies the request, routes it, dispatches it, and relays the result. The workers do the work with their own tools, context and model.
 
+It also picks that model for you: each task goes to a model and reasoning effort that fit its difficulty, a fast, cheap one for quick jobs and your strongest one for hard problems ([model routing](#model-routing)).
+
 ![The Leader clarifies the request](assets/clarify.png)
 
 ## What a conversation looks like
@@ -37,7 +39,7 @@ The brief the worker received was four lines, because the worker already knew th
 - **Reports back on its own.** When a worker's turn ends, its report goes to the Leader, which summarizes it for you and turns open questions into questions for you. You don't have to check on anything.
 - **Keeps you in control.** Creating workspaces, dispatching, cancelling and changing models need your approval. The approval card shows the target workspace, session and queue status before the brief. In **Full access** they run without asking.
 - **Keeps a task ledger.** `task_status` lists every task with its status and report. After a restart, tasks are checked against the workers' logs, so nothing stays stuck at "running" and a lost report is labelled as lost.
-- **Picks models per session.** It can show which model each session uses, run a new task on a given model, or switch a worker's model, without touching your default model.
+- **Routes each task to the right model.** The Leader can pick the model and reasoning effort for every task it dispatches, so a quick lookup runs on a fast, cheap model and a hard refactor gets your strongest model at high effort. Give it your rule once and it applies it. See [Model routing](#model-routing).
 - **Remembers you.** The Leader keeps a plain `MEMORY.md` with your preferences, which workspace or session handles what, and decisions you made. It reads the file at the start of each conversation.
 - **Uses few tokens.** The Leader never reads code or command output; it sees bounded summaries and capped reports. Its context grows slowly, a turn usually takes one or two model calls, and it runs well on a small, fast model. See [Why it is cheap to run](#why-it-is-cheap-to-run).
 - **Stays a coordinator.** A Leader session only sees its own tools and `ask_user_question`. Tools from other plugins stay hidden unless you allow them.
@@ -52,6 +54,28 @@ A session that does the work reads files, runs commands and keeps all of that in
 - Because it only talks and routes, it runs well on a small, fast model, while each worker uses whatever model suits its task.
 
 From the author's own use: over two days, the Leader session, on DeepSeek Flash, handled 79 turns with 165 model calls and 31 dispatches, and its context was about 149K tokens at the end. For comparison, the standard-preset session used to develop this plugin took 730 model calls for 31 turns and reached 577K tokens. These are the numbers from one setup, not a benchmark, but they show the pattern: the expensive reading and editing happens in the workers, and the session you talk to stays light.
+
+## Model routing
+
+Every DSH session has its own model and reasoning effort. Because the Leader creates the worker sessions, it can choose both for each task, the same way you would by hand in the model picker. That makes it a model router: the task decides the model, not whichever default happened to be set.
+
+Tell the Leader your rule in plain words, and ask it to remember it. It saves the rule to `MEMORY.md` and applies it to later dispatches:
+
+> **You:** From now on: lookups, small edits and config changes go to DeepSeek Flash. Normal feature work goes to GPT at high effort. Refactors, debugging and anything that needs careful reasoning go to Opus at xhigh. Remember this.
+>
+> **You:** Find out why the QQ bot replies so slowly.
+>
+> **Leader:** This is a debugging task, so I'm using Opus at xhigh. Sent as T-4a91c2 to a new session in misc-tasks.
+
+How it works:
+
+- **New tasks.** `dispatch_task` takes `provider`, `model` and `reasoning_effort`. The new worker session starts on that model.
+- **Existing workers.** `set_session_model` switches a worker's model and effort. A running worker uses the new model from its next step, which would also change the turn already in progress. So `dispatch_task` refuses a model change for a session that is still running; the Leader can send the task on the current model or wait until the session is idle.
+- **Only real models.** `list_models` returns the models your providers actually offer and the efforts each one supports. The Leader picks from that list, and if a name you used matches more than one model, it asks which one you meant.
+- **Your default stays put.** All of this is per session. The host default model, and the model of the Leader itself, do not change.
+- **Your call.** Without a rule or an explicit request, workers use the default model. Model changes go through the same approval gate as other write actions.
+
+The Leader itself only talks and routes, so it can run on the cheapest model you have while the workers get whatever each task needs. See [Why it is cheap to run](#why-it-is-cheap-to-run).
 
 ## Quick start
 
