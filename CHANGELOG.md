@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.3
+
+- Document the deployment-side `session-query-sqlite` configuration that enables `session_search` and `session_event_search`, the `openAt` choices, the first-search timeout, and recovery when one damaged stored Session blocks the first index build. Code and preset are unchanged.
+
 ## 0.6.2
 
 - Add web search/fetch, read-only Session queries, deliverable presentation, todo tracking, and schedule management tools to the Leader preset.

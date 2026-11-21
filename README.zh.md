@@ -4,7 +4,7 @@
 
 **用一个聊天窗口管理你所有的 DSH 会话。** 你只管告诉 Leader 想做什么，它判断这件事属于哪个项目、哪个会话，交给下属会话去做，做完再告诉你结果。
 
-**0.6.2 新增：** Leader 预设现在包含网页搜索/抓取、只读 Session 查询、交付物展示、待办记录和定时任务工具。
+**0.6.3 新增：** README 说明了如何为 Leader 的 `session_search` 等工具启用 Session 全文搜索（DSH 默认关闭）。见 [Session 全文搜索](#session-全文搜索) 和 [更新日志](CHANGELOG.md)。
 
 DSH 的每个会话只在一个工作区里干活。项目一多，你就得记住哪个会话在做什么，再来回切换。在 Web 界面里这已经很麻烦，用手机通过 IM 机器人操作就更麻烦，因为一个聊天同一时间只绑定一个会话。Leader 会话是所有会话的统一入口：你只跟 Leader 说话，由 Leader 去跟各个会话打交道。
 
@@ -154,6 +154,32 @@ Leader 很适合作为聊天机器人唯一对接的会话。配合 `@xmanrui/ds
 | `cancel_task` | 是 | 停止下属会话当前的轮次 |
 
 「是」表示调用会等你点 **允许一次**，除非 Leader 会话的权限预设在 `fullAccessPresets` 里（默认是 `danger-full-access`，即**完全权限**）。哪些工具需要审批由 `writeTools` 决定。旧版本里保存过的列表会保留，并且总会加上 `set_session_model`。
+
+### Session 全文搜索
+
+Leader 预设挂载了 `@deepseek-ai/dsh-tool-session-query`，提供 `session_search`、`session_event_search`、`session_trace`、`session_event_trace` 和 `session_event_read`。全文搜索工具依赖 DSH 部署提供的搜索索引，本插件不负责建索引。DSH 的 base 和 Web bundle 把 `session-query-sqlite` 索引配置为 `openAt: never`，此时 `session_search` 和 `session_event_search` 会报 `session search is disabled in this deployment`。精确读取、过滤和追踪仍然可用。
+
+要启用全文搜索，在 profile 的 `cordis.patch.yml`（例如 `~/.dsh/profiles/web/cordis.patch.yml`）里加上下面这一项。同一 id 以最后一项为准。
+
+```yaml
+- id: session-query-sqlite
+  config:
+    path: /home/<user>/.dsh/storages/session-query.sqlite  # 示例路径，请写绝对路径
+    openAt: startup
+    journalMode: wal
+```
+
+路径只是示例。`~` 不会展开，相对路径按启动 DSH 时的目录解析。索引是派生的 SQLite FTS 数据库，里面有一份可搜索的 Session 文本副本；缺少的目录和文件会以仅属主可访问的权限创建。保存后如果搜索仍报 disabled，请重启 DSH。
+
+| `openAt` | 行为 |
+|---|---|
+| `never` | DSH 默认值。精确读取、过滤和追踪可用；全文搜索不可用，也不会打开 SQLite。 |
+| `first-search` | 第一次全文搜索时才打开 SQLite，并由这次搜索读取全部已存 Session、建好索引。 |
+| `startup` | DSH 启动时打开 SQLite，几乎不增加启动时间。索引仍由第一次全文搜索建立，这一点和 `first-search` 相同。 |
+
+第一次搜索要读取所有未打开的 Session 日志，几百个 Session 可能超过一分钟。之后的搜索只重读有变化的 Session。工具的 `searchTimeoutMs` 默认 30 秒；第一次搜索超时会在写入前取消，下一次搜索会从头再建。如果第一次搜索一直超时，请调大 `tool-session-query` 这一项的 `searchTimeoutMs`。尽量在其他 Session 空闲时做第一次搜索：读取期间已存 Session 一直在变，建索引也会失败，报下面这条存储错误。
+
+**一条损坏的 Session 会挡住整个索引。** 只要有一条已存 Session 日志校验失败，第一次建索引就会整体失败，工具报 `session history storage is unavailable`。把损坏 Session 的目录移出 `~/.dsh/sessions`（例如移到 `~/.dsh/sessions-quarantine/`）后再搜索一次即可，不需要删除索引文件。
 
 ## 记忆
 

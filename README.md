@@ -4,7 +4,7 @@ English | [中文](README.zh.md)
 
 **One chat to run all of your DSH sessions.** Tell the Leader what you want. It works out which project and session the work belongs to, hands it to a worker session, and tells you when it is done.
 
-**New in 0.6.2:** The Leader preset now includes web search/fetch, read-only Session queries, deliverable presentation, todo tracking, and schedule management tools.
+**New in 0.6.3:** The README explains how to turn on full-text Session search for the Leader's `session_search` tools, which DSH disables by default. See [Full-text Session search](#full-text-session-search) and the [changelog](CHANGELOG.md).
 
 Each DSH session works in one workspace. Once you have several projects going, you have to remember which session is doing what and switch between them. That is slow in the Web UI and slower from your phone, where an IM bot is bound to one session at a time. A Leader session is one entry point for all of them: you talk to the Leader, and the Leader talks to your sessions.
 
@@ -154,6 +154,32 @@ For a running task, `task_status` reports `waiting_for_approval`; `read_session`
 | `cancel_task` | Yes | Stop the worker's current turn |
 
 "Yes" means the call waits for **Allow once** unless the Leader session's permission preset is in `fullAccessPresets` (default `danger-full-access`, shown as **Full access**). `writeTools` sets which tools need approval. A list you saved in an earlier version is kept, and `set_session_model` is always added to it.
+
+### Full-text Session search
+
+The Leader preset mounts `@deepseek-ai/dsh-tool-session-query`, which adds `session_search`, `session_event_search`, `session_trace`, `session_event_trace` and `session_event_read`. The full-text tools need a search index that the DSH deployment provides, not this plugin. DSH's base and Web bundles configure the `session-query-sqlite` index with `openAt: never`. With that setting, `session_search` and `session_event_search` fail with `session search is disabled in this deployment`. Exact reads, filters and traces keep working.
+
+To turn full-text search on, add this entry to your profile's `cordis.patch.yml`, for example `~/.dsh/profiles/web/cordis.patch.yml`. The last entry with this id wins.
+
+```yaml
+- id: session-query-sqlite
+  config:
+    path: /home/<user>/.dsh/storages/session-query.sqlite  # example path; use an absolute path
+    openAt: startup
+    journalMode: wal
+```
+
+The path is an example. `~` is not expanded, and a relative path resolves against the directory DSH was started from. The index is a derived SQLite FTS database that holds a searchable copy of Session text. DSH creates missing directories and the file owner-only. If search still reports disabled after you save the entry, restart DSH.
+
+| `openAt` | Behavior |
+|---|---|
+| `never` | DSH default. Exact reads, filters and traces work; full-text search is disabled and SQLite is never opened. |
+| `first-search` | SQLite opens on the first full-text search. That search then reads every stored Session and builds the index. |
+| `startup` | SQLite opens when DSH starts, which adds little startup time. The index is still built by the first full-text search, as with `first-search`. |
+
+The first search reads every Session log that is not currently open. With a few hundred Sessions it can take more than a minute. Later searches only re-read Sessions that changed. The tool's `searchTimeoutMs` defaults to 30 seconds. A first search that runs past it is cancelled before anything is written, so the next search starts the build over. If the first search keeps timing out, raise `searchTimeoutMs` on the `tool-session-query` entry. Run the first search while other Sessions are idle: if stored Sessions keep changing while it reads them, the build fails with the same storage error described below.
+
+**One damaged Session blocks the whole index.** If any stored Session log fails validation, the first build fails and the tool reports `session history storage is unavailable`. Move the damaged Session's directory out of `~/.dsh/sessions`, for example into `~/.dsh/sessions-quarantine/`, and search again. You do not need to delete the index file.
 
 ## Memory
 

@@ -1,6 +1,6 @@
 {
   "name": "dsh-super-leader",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "type": "module",
   "description": "Leader agent preset for DeepSeek Harness: a session that clarifies requirements with the user, routes tasks to workspaces and sessions, dispatches them, and relays the workers' reports. Write actions require approval unless the session runs with full access.",
   "license": "MIT",
