@@ -9,7 +9,7 @@
 3. 把任务简报派发给下属会话；
 4. 收到下属的完成回报后整理给用户。
 
-Leader 不读代码、不改文件，只使用本插件提供的少量工具。
+Leader preset now also mounts `@deepseek-ai/dsh-tool-web`, `@deepseek-ai/dsh-tool-session-query`, `@deepseek-ai/dsh-tool-present`, `@deepseek-ai/dsh-tool-todo`, and `@deepseek-ai/dsh-tool-schedule` alongside its existing coordination tools.
 
 第一版不包含 IM 集成。
 

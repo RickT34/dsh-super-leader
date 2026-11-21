@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.2
+
+- Add web search/fetch, read-only Session queries, deliverable presentation, todo tracking, and schedule management tools to the Leader preset.
+
 ## 0.6.1
 
 - Show `waiting_for_user_answer` separately from approval in `task_status` and `read_session`, and notify the owning Leader when a tracked worker is still waiting for a user answer. The original question channel still owns the answer.

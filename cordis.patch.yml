@@ -27,6 +27,21 @@
             name: '@deepseek-ai/dsh-time-context'
           - id: tool-ask-user
             name: '@deepseek-ai/dsh-tool-ask-user'
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            config:
+              fetch: true
+              searchTimeoutMs: 60000
+          - id: tool-session-query
+            name: '@deepseek-ai/dsh-tool-session-query'
+          - id: tool-present
+            name: '@deepseek-ai/dsh-tool-present'
+          - id: tool-todo
+            name: '@deepseek-ai/dsh-tool-todo'
+            config:
+              allowParallelInProgress: true
+          - id: tool-schedule
+            name: '@deepseek-ai/dsh-tool-schedule'
           - id: compaction
             name: cordis:group
             group: true

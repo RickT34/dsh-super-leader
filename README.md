@@ -4,7 +4,7 @@ English | [中文](README.zh.md)
 
 **One chat to run all of your DSH sessions.** Tell the Leader what you want. It works out which project and session the work belongs to, hands it to a worker session, and tells you when it is done.
 
-**New in 0.6.1:** The Leader can distinguish a worker waiting for a user answer from one waiting for approval. Workers are asked to proceed on reasonable in-scope assumptions and report risks or blockers without interrupting the user. See [Worker approvals](#worker-approvals) and the [changelog](CHANGELOG.md).
+**New in 0.6.2:** The Leader preset now includes web search/fetch, read-only Session queries, deliverable presentation, todo tracking, and schedule management tools.
 
 Each DSH session works in one workspace. Once you have several projects going, you have to remember which session is doing what and switch between them. That is slow in the Web UI and slower from your phone, where an IM bot is bound to one session at a time. A Leader session is one entry point for all of them: you talk to the Leader, and the Leader talks to your sessions.
 
