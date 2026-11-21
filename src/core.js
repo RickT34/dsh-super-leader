@@ -177,31 +177,30 @@ const FOLLOWUP_FOOTER_MARK = '\n---\nFollow-up from the leader session';
 
 /**
  * The message a worker receives. A session that already received a Leader task
- * knows the report format, so a follow-up gets a one-line footer.
+ * knows the report format, so a follow-up gets a shorter reminder.
  */
 export function workerBrief({ taskId, title, brief, leaderSessionId, followup = false }) {
-  if (followup) {
-    return [
-      `# Task ${taskId}: ${title}`,
+  const assignment = followup
+    ? `${FOLLOWUP_FOOTER_MARK} (${leaderSessionId}).`
+    : `${BRIEF_FOOTER_MARK} (${leaderSessionId}) on behalf of the user.`;
+  const report = followup
+    ? ['End your final reply with the same "## Report" block as before (Status / Summary / Changes / Open questions).']
+    : [
+      'Work on it in this session. When you finish, or when you cannot continue, end your final reply with a short report in this form:',
       '',
-      brief.trim(),
-      `${FOLLOWUP_FOOTER_MARK} (${leaderSessionId}). End your final reply with the same "## Report" block as before (Status / Summary / Changes / Open questions).`,
-    ].join('\n');
-  }
+      '## Report',
+      '- Status: done | blocked | needs-decision',
+      '- Summary: what you did and the result',
+      '- Changes: files or artifacts you created or changed',
+      '- Open questions: decisions or information you need from the user (or "none")',
+    ];
   return [
     `# Task ${taskId}: ${title}`,
     '',
     brief.trim(),
-    '',
-    '---',
-    `This task was assigned by a leader session (${leaderSessionId}) on behalf of the user.`,
-    'Work on it in this session. When you finish, or when you cannot continue, end your final reply with a short report in this form:',
-    '',
-    '## Report',
-    '- Status: done | blocked | needs-decision',
-    '- Summary: what you did and the result',
-    '- Changes: files or artifacts you created or changed',
-    '- Open questions: decisions or information you need from the user (or "none")',
+    assignment,
+    'Do not call ask_user_question or another question tool to interrupt the user. When uncertain, continue under the most reasonable assumption within the authorized task scope and record your assumptions and risks in the report. If you genuinely cannot proceed, state the blocker and the decision or information you need in the report.',
+    ...report,
   ].join('\n');
 }
 

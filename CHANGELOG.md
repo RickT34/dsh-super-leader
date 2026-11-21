@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.1
+
+- Show `waiting_for_user_answer` separately from approval in `task_status` and `read_session`, and notify the owning Leader when a tracked worker is still waiting for a user answer. The original question channel still owns the answer.
+- Instruct workers in initial and follow-up briefs to avoid interrupting the user with question tools, proceed on reasonable in-scope assumptions, and report assumptions, risks, and genuine blockers.
+
 ## 0.6.0
 
 - Route pending tool approvals from tracked workers to their owning Leader by default. That Leader can allow the exact request once or reject it using `answer_approval`. This does not change standing permissions or the Leader's own approval rules.

@@ -118,7 +118,7 @@ export function apply(ctx, config = {}) {
 
   ctx.tools.register({
     name: 'read_session',
-    description: 'Read what a session has actually done (and which model it uses): its recent requests and replies, earlier requests, todos, edited files and Leader tasks. session.waiting_for_approval reports a live approval (null means unknown). Read-only. Call this before dispatching to an existing session, so the brief only needs to state what is new.',
+    description: 'Read what a session has actually done (and which model it uses): its recent requests and replies, earlier requests, todos, edited files and Leader tasks. session.waiting_for_approval and session.waiting_for_user_answer distinguish approval from a user question (null means unknown). Read-only. Call this before dispatching to an existing session, so the brief only needs to state what is new.',
     parameters: objectSchema({
       session_id: { type: 'string', description: 'Session id from list_sessions.' },
       recent_turns: { type: 'integer', description: 'How many latest exchanges to show in full, 1-10; default 4.' },
@@ -135,7 +135,7 @@ export function apply(ctx, config = {}) {
 
   ctx.tools.register({
     name: 'task_status',
-    description: 'Show dispatched tasks, worker sessions, and reports. For a running task, waiting_for_approval distinguishes a pending worker approval from ordinary execution (null means unknown). The report_state shows whether a report is pending, delivered, recovered, undelivered or lost. Tell the user about pending approval or missing reports. Read-only.',
+    description: 'Show dispatched tasks, worker sessions, and reports. For a running task, waiting_for_approval and waiting_for_user_answer distinguish approvals and user questions (null means unknown). The report_state shows whether a report is pending, delivered, recovered, undelivered or lost. Tell the user about pending approval, unanswered questions or missing reports. Read-only.',
     parameters: objectSchema({
       task_id: { type: 'string', description: 'One task id such as T-3f9a01. Omit to list recent tasks.' },
       include_report: { type: 'boolean', description: 'Include full reports when listing; default false (a single task always includes it).' },

@@ -150,6 +150,17 @@ test('stripBriefFooter removes the dispatch footer only', () => {
   assert.equal(stripBriefFooter('plain --- text'), 'plain --- text');
 });
 
+for (const followup of [false, true]) {
+  test(`${followup ? 'follow-up' : 'initial'} dispatch asks the worker to report uncertainty without interrupting the user`, () => {
+    const brief = workerBrief({ taskId: 'T-aaaaaa', title: 't', brief: 'body', leaderSessionId: 'L', followup });
+    assert.equal(brief.match(/Do not call ask_user_question/g)?.length, 1);
+    assert.match(brief, /most reasonable assumption within the authorized task scope/);
+    assert.match(brief, /record your assumptions and risks in the report/);
+    assert.match(brief, /cannot proceed, state the blocker/);
+    assert.equal(stripBriefFooter(brief), '# Task T-aaaaaa: t\n\nbody');
+  });
+}
+
 test('touchedFiles reads write, edit and apply_patch arguments', () => {
   assert.deepEqual(touchedFiles('write', '{"file_path":"/a"}'), ['/a']);
   assert.deepEqual(touchedFiles('edit', { file_path: '/b' }), ['/b']);

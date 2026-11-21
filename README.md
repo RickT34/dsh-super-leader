@@ -4,7 +4,7 @@ English | [中文](README.zh.md)
 
 **One chat to run all of your DSH sessions.** Tell the Leader what you want. It works out which project and session the work belongs to, hands it to a worker session, and tells you when it is done.
 
-**New in 0.6.0:** Worker approvals can go to the owning Leader. Pending status, manual fallback notices, and decision logs share an approval ID, and the wait before returning to DSH is configurable. See [Worker approvals](#worker-approvals) and the [changelog](CHANGELOG.md).
+**New in 0.6.1:** The Leader can distinguish a worker waiting for a user answer from one waiting for approval. Workers are asked to proceed on reasonable in-scope assumptions and report risks or blockers without interrupting the user. See [Worker approvals](#worker-approvals) and the [changelog](CHANGELOG.md).
 
 Each DSH session works in one workspace. Once you have several projects going, you have to remember which session is doing what and switch between them. That is slow in the Web UI and slower from your phone, where an IM bot is bound to one session at a time. A Leader session is one entry point for all of them: you talk to the Leader, and the Leader talks to your sessions.
 
@@ -134,6 +134,8 @@ Turn the checkbox off (`workerApprovalMode: off`) to send all requests straight 
 
 For a running task, `task_status` reports `waiting_for_approval`; `read_session` includes the same field under `session`. `true` means an approval is pending, `false` means none is pending, and `null` means the live state or its attribution could not be verified. While a request is assigned to the Leader, the host does not prompt the user to approve it in Web. If it is still pending about 1.5 seconds after reaching DSH's normal responders, the host sends a `[Leader progress]` notice with the approval ID, tool and worker session, at most once per task. The final `[Leader report]` summarizes approval outcomes when present. For tracked requests, the info log `super-leader: worker-approval-decision` records the responder (`leader` or `native`) and outcome; the approval ID links that entry to DSH's durable `approval/decided` event. A `native` entry does not identify the individual who answered or expose an address.
 
+`task_status` and `read_session` also expose `waiting_for_user_answer` for DSH's live question state, separately from approval. If an observed worker question is still waiting after about 1.5 seconds, the Leader gets a distinct progress notice at most once per task. The user answers in the worker session or its existing question channel; the Leader neither takes over nor submits an answer.
+
 ## Tools
 
 | Tool | Approval | What it does |
@@ -222,7 +224,7 @@ On startup, on recovery and whenever `task_status` runs, the ledger is checked a
 
 ## Limitations
 
-- Worker questions do not trigger progress notices. Manual worker approvals still need an answer in the worker session or its existing approval channel.
+- Worker questions and manual approvals still need an answer in the worker session or its existing channel.
 - Interrupted tasks are not resumed automatically.
 - Prompt sections from other plugins may still mention tools the Leader cannot see.
 

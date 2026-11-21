@@ -110,6 +110,10 @@ Host 按 Leader 分队列，每个 Leader 最多保留 8 条待决请求。新�
 
 `task_status` 的运行中任务和 `read_session.session` 返回三态 `waiting_for_approval`：`true` 为确有请求待批，`false` 为已核实无待批，`null` 为实时状态或归属不可核实。除宿主的实时待输入状态外，也用 live 日志里未配对的 `approval/asked` 查找待批请求，涵盖独占式 IM 应答者；状态不可用且找不到未决的实时审批记录时不猜测为 `false`。
 
+同一次 `session.state()` 查询也读取 `pendingInput` 的 `question`，独立返回三态 `waiting_for_user_answer`。这只反映 DSH 暴露的实时状态，不读取已超时后仍可补答的题卡。插件观察 `user-questions/request` 时立即调用原应答链；若受跟踪的 worker 约 1.5 秒仍在等答复，则发一条不含题目正文的待回答提醒，每任务最多一次。插件不修改请求、不接管应答、不冒充用户。
+
+`dispatch_task(mode=steer)` 不能回答阻塞中的 `ask_user_question`。在 DSH 0.2.2-rc.5 的隔离实验中，消息进入 `next-step`；用户从原渠道回答后，worker 才在同一轮的下一步消费这条额外用户消息。原任务和注入任务若同轮结束，回报会共用该轮的最终回复，不表示两项交付分别完成。
+
 原有审批流程持续待决约 1.5 秒时，Host 每任务至多发送一次 `[Leader progress]`，带审批 ID 和工具名，便于与回退后的决定日志关联。Leader 仍持有请求时不发人工提示；回退后重新计时，只提醒仍未决的请求。等待状态不改变任务的 `running` 状态。最终 `[Leader report]` 在有审批结果时附一行汇总。
 
 ## 派发与回报
@@ -191,6 +195,6 @@ Host 按 Leader 分队列，每个 Leader 最多保留 8 条待决请求。新�
 
 ## 已知限制（第一版）
 
-- 下属在一轮中向用户提问时，不会触发审批进度通知。手动审批必须在下属的 Web 会话或原有应答渠道处理，Leader 只能转达等待状态。
+- 下属提问和手动审批必须在下属会话或原有应答渠道处理，Leader 只能转达等待状态。
 - 日志暂时不可读时，对账会保留开放状态并暴露 `reconciliation_error`，需要等存储恢复；中断的任务不会自动重跑。
 - 其他插件的系统提示片段可能仍提到被隐藏的工具。

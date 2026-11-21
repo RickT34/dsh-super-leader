@@ -421,16 +421,62 @@ test('canonical decisions are logged as native even if the approval hook was not
   assert.deepEqual(approvalAudits(h).map(audit => audit.answerer), ['native']);
 });
 
-test('task and session queries distinguish live Web approval, no approval and an unreadable state', async t => {
+test('task and session queries distinguish approvals, questions, and unavailable state', async t => {
   const h = await workerApproval(t);
   h.events.pop(); // exercise the session.state path without a synthetic journal pair
+  const pending = ({ waiting_for_approval, waiting_for_user_answer }) => [waiting_for_approval, waiting_for_user_answer];
+  const taskView = async () => (await h.api.taskStatus({ taskId: 'a', leader: h.leader })).task;
+  const sessionView = async () => (await h.api.readSession({ sessionId: 'worker', leader: h.leader })).session;
   h.services.sessionController.state = async () => ({ pendingInput: ['approval'] });
-  assert.equal((await h.api.taskStatus({ taskId: 'a', leader: h.leader })).task.waiting_for_approval, true);
-  assert.equal((await h.api.readSession({ sessionId: 'worker', leader: h.leader })).session.waiting_for_approval, true);
+  assert.deepEqual(pending(await taskView()), [true, false]);
+  assert.deepEqual(pending(await sessionView()), [true, false]);
   h.services.sessionController.state = async () => ({ pendingInput: ['question'] });
-  assert.equal((await h.api.taskStatus({ leader: h.leader })).tasks[0].waiting_for_approval, false);
+  assert.deepEqual(pending((await h.api.taskStatus({ leader: h.leader })).tasks[0]), [false, true]);
+  assert.deepEqual(pending(await sessionView()), [false, true]);
+  h.services.sessionController.state = async () => ({ pendingInput: ['approval', 'question'] });
+  assert.deepEqual(pending(await taskView()), [true, true]);
+  assert.deepEqual(pending(await sessionView()), [true, true]);
   h.services.sessionController.state = async () => { throw new Error('unavailable'); };
-  assert.equal((await h.api.taskStatus({ taskId: 'a', leader: h.leader })).task.waiting_for_approval, null);
+  assert.deepEqual(pending(await taskView()), [null, null]);
+  assert.deepEqual(pending(await sessionView()), [null, null]);
+});
+
+test('a pending worker question notifies the Leader without claiming or exposing the question', async t => {
+  fakeApprovalClock(t);
+  const h = await workerApproval(t);
+  const request = Object.freeze({ agent: h.agent, questions: [{ id: 'q', question: 'Private question text' }] });
+  const upstream = Promise.withResolvers();
+  const next = t.mock.fn(() => upstream.promise);
+  const observe = h.hooks.get('user-questions/request');
+  const waiting = observe(request, next);
+  assert.equal(next.mock.callCount(), 1, 'must delegate immediately');
+  await advanceApprovalClock(t, 1500);
+  assert.equal(h.receipts.length, 1);
+  const notice = h.receipts[0].content[0].text;
+  assert.match(notice, /waiting for the user to answer a question/);
+  assert.match(notice, /worker session worker/i);
+  assert.doesNotMatch(notice, /Private question text|waiting for approval/);
+  const answer = { answers: [{ id: 'q', selected: [], custom: 'Human answer' }] };
+  upstream.resolve(answer);
+  assert.equal(await waiting, answer);
+});
+
+test('questions quickly answered or aborted do not send stale notices', async t => {
+  fakeApprovalClock(t);
+  const h = await workerApproval(t);
+  const observe = h.hooks.get('user-questions/request');
+  const abort = new AbortController();
+  const upstream = Promise.withResolvers();
+  const waiting = observe({ agent: h.agent, signal: abort.signal }, () => upstream.promise);
+  abort.abort();
+  const answer = { answers: [] };
+  assert.equal(await observe({ agent: h.agent }, () => answer), answer);
+  await advanceApprovalClock(t, 1500);
+  assert.deepEqual(h.receipts, []);
+  const cancelled = new Error('cancelled by provider');
+  const check = assert.rejects(waiting, cancelled);
+  upstream.reject(cancelled);
+  await check;
 });
 
 test('an active IM-only audit pair sends one approval progress report and the final report records the decision', async t => {

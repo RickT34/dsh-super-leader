@@ -19,8 +19,10 @@ import { approvalDetails, approvalSummary, currentTurnEvents, pendingApprovals }
 import { createApprovalRelay } from './approval-relay.js';
 
 const run = promisify(execFile);
-const APPROVAL_NOTICE_DELAY_MS = 1500;
+const INPUT_NOTICE_DELAY_MS = 1500;
 const STATE_READ_TIMEOUT_MS = 1500;
+const NO_PENDING_INPUT = Object.freeze({ waiting_for_approval: false, waiting_for_user_answer: false });
+const UNKNOWN_PENDING_INPUT = Object.freeze({ waiting_for_approval: null, waiting_for_user_answer: null });
 const APPROVAL_TIMEOUT_SECONDS = { default: 30, min: 5, max: 600 };
 
 // Leader tools that may be put behind approval from the settings page.
@@ -171,12 +173,17 @@ export function apply(ctx, config) {
   const delivering = new Set(); // task ids inside asynchronous prompt admission
   const activeTurn = new Map(); // sessionId -> Map<turn, Set<taskId>>
   const approvalNotices = new Map(); // taskId -> timer or delivered notice marker
+  const questionNoticeTimers = new Set();
+  const notifiedQuestionTasks = new Set();
   let disposed = false;
   ctx.effect(() => () => {
     disposed = true;
     for (const entry of approvalNotices.values()) clearTimeout(entry.timer);
     approvalNotices.clear();
-  }, 'super-leader approval notices');
+    for (const timer of questionNoticeTimers) clearTimeout(timer);
+    questionNoticeTimers.clear();
+    notifiedQuestionTasks.clear();
+  }, 'super-leader pending input notices');
   function trackTurn(sessionId, turn, taskId) {
     let turns = activeTurn.get(sessionId);
     if (!turns) activeTurn.set(sessionId, turns = new Map());
@@ -186,6 +193,7 @@ export function apply(ctx, config) {
   }
   function untrack(task) {
     clearApprovalNotice(task.id);
+    notifiedQuestionTasks.delete(task.id);
     pendingByRequest.delete(task.requestId);
     const turns = activeTurn.get(task.sessionId);
     if (!turns) return;
@@ -198,7 +206,7 @@ export function apply(ctx, config) {
 
   // Route only current, explicitly tracked worker turns. Shared turns may be
   // routed when every tracked task has the same owning Leader session.
-  function workerApprovalRoute(worker) {
+  function trackedWorkerTurn(worker) {
     const session = worker?.session;
     if (!session || ctx.agents.get(session.id) !== worker || worker.status !== 'running'
         || session.header?.origin === 'subagent' || session.header?.parentSession !== undefined) return;
@@ -238,7 +246,7 @@ export function apply(ctx, config) {
     canAnswer: entry => {
       if (disposed || !setting.relayWorkerApprovals() || setting.manualApprovalTools().has(entry.tool)
           || ctx.agents.get(entry.ownerId) !== entry.owner || !isLeader(entry.owner)) return false;
-      const route = workerApprovalRoute(entry.worker);
+      const route = trackedWorkerTurn(entry.worker);
       return route?.ownerId === entry.ownerId && route.turn === entry.turn;
     },
     deliver: entries => {
@@ -270,7 +278,7 @@ export function apply(ctx, config) {
     let response;
     try {
       if (request.signal?.aborted) return 'cancelled';
-      const route = workerApprovalRoute(request.agent);
+      const route = trackedWorkerTurn(request.agent);
       if (route) {
         const events = currentTurnEvents(route.session.snapshotEvents(), route.turn);
         const details = approvalDetails(request, events);
@@ -296,28 +304,72 @@ export function apply(ctx, config) {
     return response ? response.then(outcome => outcome === undefined ? next() : outcome) : next();
   }, { prepend: true });
 
-  async function waitingForApproval(sessionId, signal) {
+  // Observe the wait without claiming the question or changing its answer.
+  ctx.on('user-questions/request', async (request, next) => {
+    let timer;
+    let waiting = true;
+    try {
+      try {
+        const route = trackedWorkerTurn(request.agent);
+        if (!disposed && route?.ownerId && !request.signal?.aborted) {
+          const pendingTasks = () => {
+            if (!waiting || disposed || request.signal?.aborted) return [];
+            const live = trackedWorkerTurn(request.agent);
+            return live?.ownerId === route.ownerId && live.turn === route.turn
+              ? live.tasks.filter(task => !notifiedQuestionTasks.has(task.id)) : [];
+          };
+          timer = setTimeout(() => {
+            questionNoticeTimers.delete(timer);
+            void (async () => {
+              const [task] = pendingTasks();
+              if (!task) return;
+              const leader = await resolveLeader(task);
+              const tasks = pendingTasks();
+              if (!leader || !isLeader(leader) || !tasks.length) return;
+              const ids = tasks.map(task => task.id);
+              leader.followup(relayMessage(route.session.id, `[Leader progress] Worker session ${route.session.id} is waiting for the user to answer a question (tasks: ${ids.join(', ')}). Tell the user to answer it in the worker session or its existing question channel. Do not use answer_approval for this question.`));
+              for (const id of ids) notifiedQuestionTasks.add(id);
+              await ctx.sessions.flush(leader.session);
+            })().catch(() => ctx.logger.warn('super-leader: could not send pending question notice'));
+          }, INPUT_NOTICE_DELAY_MS);
+          timer.unref();
+          questionNoticeTimers.add(timer);
+        }
+      } catch { ctx.logger.warn('super-leader: could not observe worker question'); }
+      return await next();
+    } finally {
+      waiting = false;
+      clearTimeout(timer);
+      questionNoticeTimers.delete(timer);
+    }
+  }, { prepend: true });
+
+  async function pendingInputState(sessionId, signal) {
     const worker = ctx.agents.get(sessionId);
     const session = worker?.session;
-    if (!session || worker.status !== 'running') return false;
+    if (!session || worker.status !== 'running') return NO_PENDING_INPUT;
     const turn = ctx.agents.turnBoundaryOf(session).lastTurn;
     const controller = ctx.get('sessionController');
     const timeout = AbortSignal.timeout(STATE_READ_TIMEOUT_MS);
-    let remotePending = null;
+    let approval = null;
+    let question = null;
     try {
       if (typeof controller?.state === 'function') {
         const state = await controller.state({ sessionId }, signal ? AbortSignal.any([signal, timeout]) : timeout);
-        if (Array.isArray(state?.pendingInput)) remotePending = state.pendingInput.includes('approval');
+        if (Array.isArray(state?.pendingInput)) {
+          approval = state.pendingInput.includes('approval');
+          question = state.pendingInput.includes('question');
+        }
       }
     } catch { signal?.throwIfAborted(); }
     if (ctx.agents.get(sessionId) !== worker || worker.status !== 'running'
-        || ctx.agents.turnBoundaryOf(session).lastTurn !== turn) return null;
-    // Exclusive IM answerers need not enter the Web gateway. Use the audit
-    // pair as a supplement only in this confirmed live turn, never a cold log.
+        || ctx.agents.turnBoundaryOf(session).lastTurn !== turn) return UNKNOWN_PENDING_INPUT;
+    // Exclusive IM answerers need not enter the Web gateway. Use the approval
+    // audit pair as a supplement only in this confirmed live turn.
     try {
-      if (pendingApprovals(currentTurnEvents(session.snapshotEvents(), turn)).size > 0) return true;
+      if (pendingApprovals(currentTurnEvents(session.snapshotEvents(), turn)).size > 0) approval = true;
     } catch { /* use the passive state if available */ }
-    return remotePending;
+    return { waiting_for_approval: approval, waiting_for_user_answer: question };
   }
 
   function clearApprovalNotice(taskId) {
@@ -352,7 +404,7 @@ export function apply(ctx, config) {
       }).finally(() => {
         if (!entry.delivered && approvalNotices.get(taskId) === entry) approvalNotices.delete(taskId);
       });
-    }, APPROVAL_NOTICE_DELAY_MS) };
+    }, INPUT_NOTICE_DELAY_MS) };
     entry.timer.unref();
     approvalNotices.set(taskId, entry);
   }
@@ -369,7 +421,7 @@ export function apply(ctx, config) {
       return;
     }
     if (event.type === 'approval/asked') {
-      const route = workerApprovalRoute(ctx.agents.get(session.id));
+      const route = trackedWorkerTurn(ctx.agents.get(session.id));
       if (route?.session === session) trackApproval(route, event.data?.id, event.data?.toolName, event.data?.callId);
       const turn = ctx.agents.turnBoundaryOf(session).lastTurn;
       for (const taskId of activeTurn.get(session.id)?.get(turn) ?? []) scheduleApprovalNotice(session, turn, taskId, event.data?.id);
@@ -390,6 +442,7 @@ export function apply(ctx, config) {
     if (!turns.size) activeTurn.delete(session.id);
     for (const taskId of tasks) {
       clearApprovalNotice(taskId);
+      notifiedQuestionTasks.delete(taskId);
       void finishTask(session, taskId, event).catch(error => {
         ctx.logger.warn(`super-leader: reporting task ${taskId} failed: ${error?.message ?? error}`);
       });
@@ -526,20 +579,18 @@ export function apply(ctx, config) {
       await ledger.chain;
       const pendingBySession = new Map();
       const view = async (task, full) => {
-        let waiting;
+        let pending = UNKNOWN_PENDING_INPUT;
         if (task.status === 'running') {
           const worker = ctx.agents.get(task.sessionId);
-          if (worker?.status !== 'running' || ctx.agents.turnBoundaryOf(worker.session).lastTurn !== task.turn) {
-            waiting = null;
-          } else {
-            if (!pendingBySession.has(task.sessionId)) pendingBySession.set(task.sessionId, waitingForApproval(task.sessionId, signal));
-            waiting = await pendingBySession.get(task.sessionId);
+          if (worker?.status === 'running' && ctx.agents.turnBoundaryOf(worker.session).lastTurn === task.turn) {
+            if (!pendingBySession.has(task.sessionId)) pendingBySession.set(task.sessionId, pendingInputState(task.sessionId, signal));
+            pending = await pendingBySession.get(task.sessionId);
           }
         }
         const note = reportNote(task);
         return {
           id: task.id, title: task.title, status: task.status,
-          ...(task.status === 'running' ? { waiting_for_approval: waiting ?? null } : {}),
+          ...(task.status === 'running' ? pending : {}),
           ...(task.approvalSummary ? { approval_summary: task.approvalSummary } : {}),
           report_state: reportState(task),
           report_missing: ['recovered', 'lost', 'undelivered'].includes(reportState(task)),
@@ -699,7 +750,7 @@ export function apply(ctx, config) {
       const live = ctx.agents.get(sessionId);
       const digest = sessionDigest(snapshot.events, { recentTurns });
       const model = await modelFor(sessionId, snapshot.events);
-      const waiting = await waitingForApproval(sessionId, signal);
+      const pending = await pendingInputState(sessionId, signal);
       const tasks = ledger.tasks().filter(task => task.sessionId === sessionId)
         .sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1))
         .map(task => ({ id: task.id, title: task.title, status: task.status }));
@@ -711,7 +762,7 @@ export function apply(ctx, config) {
           cwd: header.cwd ?? null,
           workspace: workspace ? { id: workspace.id, title: workspace.title } : null,
           running: ctx.agents.get(sessionId)?.status === 'running',
-          waiting_for_approval: waiting,
+          ...pending,
           archived: registry?.archivedSessionIds.includes(sessionId) ?? false,
           model: formatModel(model.current),
           ...(model.current ? { model_id: model.current } : {}),
