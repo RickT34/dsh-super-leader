@@ -4,6 +4,8 @@
 
 **用一个聊天窗口管理你所有的 DSH 会话。** 你只管告诉 Leader 想做什么，它判断这件事属于哪个项目、哪个会话，交给下属会话去做，做完再告诉你结果。
 
+**0.6.0 新增：** 下属审批可转交归属 Leader 应答。支持查看待批状态、超时转回人工、按审批 ID 对照提醒和审计日志。等待时间可在插件设置页修改。详见[下属审批](#下属审批)和[更新记录](CHANGELOG.md)。
+
 DSH 的每个会话只在一个工作区里干活。项目一多，你就得记住哪个会话在做什么，再来回切换。在 Web 界面里这已经很麻烦，用手机通过 IM 机器人操作就更麻烦，因为一个聊天同一时间只绑定一个会话。Leader 会话是所有会话的统一入口：你只跟 Leader 说话，由 Leader 去跟各个会话打交道。
 
 Leader 自己不写代码、不改文件。它负责把需求问清楚、决定交给谁、派发任务、转达结果；具体工作由下属会话用自己的工具、上下文和模型完成。
@@ -120,15 +122,28 @@ Leader 很适合作为聊天机器人唯一对接的会话。配合 `@xmanrui/ds
 
 如果 Leader 处理回报时向你提问或需要审批，而 dsh-im 无法在这个聊天里显示，就到 Web 界面里回答。在你回答之前，这一轮不会结束，回复也不会推送到聊天。
 
+## 下属审批
+
+在 **插件 → Super Leader** 中，**由 Leader 决定下属审批**默认勾选（`workerApprovalMode: leader`）。只有当下属当前跟踪的任务能明确归属到唯一的 Leader 会话，请求才会发给该 Leader。Leader 可以批准一次，也可以拒绝；主机不会自动放行。同轮存在额外输入，或拿不到工具参数，本身不影响转交。要让某些工具直接走 DSH 原有流程，可在 **仍需手动审批的下属工具名**（`workerManualApprovalTools`，默认为空）里按完整名称添加，也可以填尚未加载的工具名。
+
+请求按 Leader 分组，约 250 毫秒合并一批；每个 Leader 最多可有 8 条待决，通知最多每 3 秒一次。已加载但空闲的 Leader 可以被通知唤醒。只有同一条任务的归属 Leader 能调用 `answer_approval`，用 `approvalId` 和 `decision`（`allowed-once` 或 `rejected`）应答。归属 Leader 未加载或不可用、队列满、或超时未答时，回到 DSH 原有的 Web / IM 审批。回退不等于拒绝；Web 仍可等待人工应答或取消，IM 仍按原有时限处理。已被其他适配器接手的请求不受影响。
+
+**转回人工前的等待时间（秒）**可填 5 到 600 的整数，默认 30 秒。从主机将请求加入 Leader 的队列时开始计时，包含等待发送通知的时间。保存后只影响新请求，已在等待的请求保留原截止时间。
+
+取消勾选（`workerApprovalMode: off`），所有请求都直接走 DSH 原有流程。旧的 `autoApproveWorkers` 仍能读取配置文件，但其值不影响行为。这两种模式都不改变下属的常驻权限，不覆盖 DSH 的 `never` 策略，也不介入 Leader 自身的审批。
+
+`task_status` 为运行中的任务返回 `waiting_for_approval`，`read_session` 在 `session` 下返回同名字段。`true` 表示有待审批请求，`false` 表示没有，`null` 表示无法核实实时状态或归属。Leader 处理期间不会提示用户去 Web 审批。请求交给 DSH 原有应答链后，如果约 1.5 秒仍未决，主机会发出 `[Leader progress]` 通知，包含审批 ID、工具名和下属会话，每任务最多一次。最终的 `[Leader report]` 在有审批结果时会附上一行汇总。对已跟踪的请求，插件在 info 日志 `super-leader: worker-approval-decision` 中记录应答方（`leader` 或 `native`）和结果，并用同一个审批 ID 关联 DSH 持久日志中的 `approval/decided`。`native` 不标识具体应答人，也不暴露地址。
+
 ## 工具
 
 | 工具 | 是否审批 | 作用 |
 |---|---|---|
 | `list_workspaces` | 否 | 列出已登记的工作区和用途说明 |
 | `list_sessions` | 否 | 列出会话、所在工作区、是否运行中、使用的模型、最近一次请求的首行、最近一次 Leader 任务 |
-| `read_session` | 否 | 查看会话实际做了什么：最近的请求和回复、更早的请求、待办清单、改过的文件、Leader 派给它的任务 |
+| `read_session` | 否 | 查看会话实际做了什么、收到的 Leader 任务，以及是否在等待审批 |
 | `list_models` | 否 | 列出可用的服务商和模型、每个模型的推理强度，以及主机默认模型 |
-| `task_status` | 否 | 查看已派发的任务、回报，以及回报是已送达、已恢复还是已丢失 |
+| `task_status` | 否 | 查看已派发的任务、是否在等审批，以及回报是已送达、已恢复还是已丢失 |
+| `answer_approval` | 否 | 由归属 Leader 批准一次或拒绝一条待决的下属请求 |
 | `read_memory` | 否 | 读取 Leader 工作目录下的 `MEMORY.md` |
 | `write_memory` | 否 | 向 `MEMORY.md` 追加内容或整体重写（`mode: "replace"`）；最多 32,000 字符 |
 | `create_workspace` | 是 | 在允许的根目录下新建目录（可选 `git clone`、`git init`、`AGENTS.md`）并登记为工作区 |
@@ -167,6 +182,9 @@ Leader 很适合作为聊天机器人唯一对接的会话。配合 `@xmanrui/ds
     fullAccessPresets:         # 这些权限预设下写操作免审批
       - danger-full-access
     workerPreset: standard     # 新建下属会话使用的预设；留空则用主机默认
+    workerApprovalMode: leader # leader 或 off（DSH 原有审批）
+    workerApprovalTimeoutSeconds: 30 # 等待 Leader 应答的秒数
+    workerManualApprovalTools: [] # 按完整工具名排除 Leader 应答
     reportMaxChars: 4000       # 转达回报的最大长度
 ```
 
@@ -174,6 +192,9 @@ Leader 很适合作为聊天机器人唯一对接的会话。配合 `@xmanrui/ds
 |---|---|---|
 | `workspaceRoots` | `[~/Work]` | 新建工作区允许的父目录 |
 | `workerPreset` | 主机默认 | 新建下属会话的预设，不能是 Leader 预设 |
+| `workerApprovalMode` | `leader` | 转交归属 Leader 应答；设为 `off` 时使用 DSH 原有审批 |
+| `workerApprovalTimeoutSeconds` | `30` | 等待 Leader 应答的时限，5–600 整数秒；只影响新请求 |
+| `workerManualApprovalTools` | `[]` | 在 `leader` 模式下仍走 DSH 原有流程的精确工具名 |
 | `fullAccessPresets` | `[danger-full-access]` | 免审批的权限预设 |
 | `writeTools` | `create_workspace`、`dispatch_task`、`cancel_task`、`set_session_model` | 需要审批的工具；总是包含 `set_session_model` |
 | `allowTools` | `[]` | Leader 额外可用的全局工具 |
@@ -201,7 +222,7 @@ Leader 很适合作为聊天机器人唯一对接的会话。配合 `@xmanrui/ds
 
 ## 已知限制
 
-- 下属在一轮中途提问或等待审批时，Leader 要等这一轮结束才会知道。
+- 下属提问不会触发审批进度通知。手动审批仍须在下属会话或原有应答渠道处理。
 - 中断的任务不会自动继续执行。
 - 其他插件的系统提示可能仍会提到 Leader 看不到的工具。
 

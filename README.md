@@ -4,6 +4,8 @@ English | [中文](README.zh.md)
 
 **One chat to run all of your DSH sessions.** Tell the Leader what you want. It works out which project and session the work belongs to, hands it to a worker session, and tells you when it is done.
 
+**New in 0.6.0:** Worker approvals can go to the owning Leader. Pending status, manual fallback notices, and decision logs share an approval ID, and the wait before returning to DSH is configurable. See [Worker approvals](#worker-approvals) and the [changelog](CHANGELOG.md).
+
 Each DSH session works in one workspace. Once you have several projects going, you have to remember which session is doing what and switch between them. That is slow in the Web UI and slower from your phone, where an IM bot is bound to one session at a time. A Leader session is one entry point for all of them: you talk to the Leader, and the Leader talks to your sessions.
 
 The Leader does not write code or edit files. It clarifies the request, routes it, dispatches it, and relays the result. The workers do the work with their own tools, context and model.
@@ -120,15 +122,28 @@ The Leader works well as the one session your chat bot talks to. Setup with `@xm
 
 If the Leader asks a question or needs an approval while handling a report, and dsh-im cannot show it in that chat, answer it in the Web UI. The turn, and the reply to the chat, wait until you do.
 
+## Worker approvals
+
+In **Plugins → Super Leader**, **Let the Leader decide worker approvals** is on by default (`workerApprovalMode: leader`). A request goes only to the Leader session that uniquely owns the worker's current tracked task. The Leader can allow it once or reject it; the host does not automatically approve it. A request can be forwarded even if the task has other inputs or the tool's arguments are unavailable. Use **Worker tool names that still need manual approval** (`workerManualApprovalTools`, initially empty) to send those exact tool names directly to DSH. You can add names of tools that are not currently loaded.
+
+Requests are batched per Leader for about 250 ms, with at most eight pending and at most one notification every three seconds. A notification can wake an idle, loaded Leader. The Leader uses `answer_approval` with `approvalId` and `decision` (`allowed-once` or `rejected`); only the exact owner Leader can answer. If the owner is unavailable, the queue is full, or the deadline passes without a decision, DSH's normal Web or IM responders take over. Going to DSH is not a rejection. Web requests remain cancellable and can wait for a human response; IM adapters keep their own timing. An adapter that already claimed a request stays in control.
+
+Set **Wait before manual approval (seconds)** to a whole number from 5 to 600 (default: 30). The timer starts when the host queues the request for the Leader, including time spent waiting for the notification. Saving a new value changes deadlines for new requests only.
+
+Turn the checkbox off (`workerApprovalMode: off`) to send all requests straight to DSH. The old `autoApproveWorkers` setting is accepted for compatibility but has no effect. Neither mode changes the worker's standing permissions, overrides DSH's `never` policy, or changes how the Leader's own requests are handled.
+
+For a running task, `task_status` reports `waiting_for_approval`; `read_session` includes the same field under `session`. `true` means an approval is pending, `false` means none is pending, and `null` means the live state or its attribution could not be verified. While a request is assigned to the Leader, the host does not prompt the user to approve it in Web. If it is still pending about 1.5 seconds after reaching DSH's normal responders, the host sends a `[Leader progress]` notice with the approval ID, tool and worker session, at most once per task. The final `[Leader report]` summarizes approval outcomes when present. For tracked requests, the info log `super-leader: worker-approval-decision` records the responder (`leader` or `native`) and outcome; the approval ID links that entry to DSH's durable `approval/decided` event. A `native` entry does not identify the individual who answered or expose an address.
+
 ## Tools
 
 | Tool | Approval | What it does |
 |---|---|---|
 | `list_workspaces` | No | List registered workspaces with their purpose notes |
 | `list_sessions` | No | List sessions with workspace, running state, model, the first line of the latest request, and the latest Leader task |
-| `read_session` | No | Show what a session did: recent requests and replies, earlier requests, todo list, changed files, Leader tasks sent to it |
+| `read_session` | No | Show what a session did, its Leader tasks, and whether it is waiting for approval |
 | `list_models` | No | List routable providers and models with their reasoning efforts, and the host default model |
-| `task_status` | No | Show dispatched tasks, their reports, and whether a report was delivered, recovered or lost |
+| `task_status` | No | Show dispatched tasks, their approval wait state, and whether their reports were delivered, recovered or lost |
+| `answer_approval` | No | As the owner Leader, allow one pending worker request once or reject it |
 | `read_memory` | No | Read `MEMORY.md` in the Leader's working directory |
 | `write_memory` | No | Append to `MEMORY.md` or rewrite it (`mode: "replace"`); at most 32,000 characters |
 | `create_workspace` | Yes | Create a directory under an allowed root (optionally `git clone`, `git init`, `AGENTS.md`) and register it as a workspace |
@@ -167,6 +182,9 @@ Open **Plugins → Super Leader** in the Web app. Changes apply to Leader sessio
     fullAccessPresets:         # permission presets under which write tools skip approval
       - danger-full-access
     workerPreset: standard     # preset for new worker sessions; empty uses the host default
+    workerApprovalMode: leader # leader or off (normal DSH approval)
+    workerApprovalTimeoutSeconds: 30 # wait for Leader before falling back to DSH
+    workerManualApprovalTools: [] # exact tool names exempt from Leader decisions
     reportMaxChars: 4000       # maximum length of a relayed report
 ```
 
@@ -174,6 +192,9 @@ Open **Plugins → Super Leader** in the Web app. Changes apply to Leader sessio
 |---|---|---|
 | `workspaceRoots` | `[~/Work]` | Allowed parent directories for new workspaces |
 | `workerPreset` | host default | Preset for new worker sessions; must not be the Leader preset |
+| `workerApprovalMode` | `leader` | Route requests to their owner Leader, or set `off` to use normal DSH approval |
+| `workerApprovalTimeoutSeconds` | `30` | Whole seconds to wait for a Leader decision, 5–600; new requests only |
+| `workerManualApprovalTools` | `[]` | Exact tool names that use normal DSH approval even in `leader` mode |
 | `fullAccessPresets` | `[danger-full-access]` | Permission presets that skip approval |
 | `writeTools` | `create_workspace`, `dispatch_task`, `cancel_task`, `set_session_model` | Tools that need approval; `set_session_model` is always included |
 | `allowTools` | `[]` | Extra global tools a Leader session may use |
@@ -201,7 +222,7 @@ On startup, on recovery and whenever `task_status` runs, the ledger is checked a
 
 ## Limitations
 
-- If a worker asks a question or waits for approval in the middle of a turn, the Leader finds out only when that turn ends.
+- Worker questions do not trigger progress notices. Manual worker approvals still need an answer in the worker session or its existing approval channel.
 - Interrupted tasks are not resumed automatically.
 - Prompt sections from other plugins may still mention tools the Leader cannot see.
 

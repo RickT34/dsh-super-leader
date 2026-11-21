@@ -9,11 +9,12 @@ window.__ModuleLoader__.load({
     const PKG = 'dsh-super-leader';
     const NS = 'superLeader';
     const ENTRY_ID = 'super-leader';
-    const FIELDS = ['workspaceRoots', 'workerPreset', 'fullAccessPresets', 'writeTools', 'allowTools', 'reportMaxChars'];
+    const TIMEOUT = { key: 'workerApprovalTimeoutSeconds', default: 30, min: 5, max: 600 };
+    const FIELDS = ['workspaceRoots', 'workerPreset', 'fullAccessPresets', 'writeTools', 'workerApprovalMode', TIMEOUT.key, 'workerManualApprovalTools', 'allowTools', 'reportMaxChars'];
 
     const en = {
       summary: 'Leader preset: clarify, dispatch, and relay. Configure roots, approvals, and tools here.',
-      intro: 'Changes apply to Leader sessions without a restart.',
+      intro: 'Changes take effect without a restart.',
       loading: 'Loading…',
       notServed: 'The super-leader plugin is not running, so its settings cannot be edited now.',
       readOnly: 'This deployment stores settings read-only.',
@@ -27,6 +28,11 @@ window.__ModuleLoader__.load({
       fullAccessHint: 'When the Leader session uses one of these access modes, write actions run without an approval card.',
       writeTools: 'Actions that need approval',
       writeToolsHint: 'Unchecked actions run without asking, in every access mode. Changing a session model always needs approval.',
+      workerApprovals: 'Worker approvals',
+      workerApprovalMode: 'Let the Leader decide worker approvals',
+      workerApprovalTimeout: 'Wait before manual approval (seconds)',
+      workerApprovalTimeoutError: 'Enter a whole number from 5 to 600.',
+      workerManualApprovalTools: 'Worker tool names that still need manual approval',
       allowTools: 'Extra tools the Leader may use',
       allowToolsHint: 'Tools registered by other plugins are hidden from Leader sessions unless checked here.',
       filter: 'Filter tools',
@@ -52,7 +58,7 @@ window.__ModuleLoader__.load({
     };
     const zh = {
       summary: 'Leader 预设：澄清需求、派发任务、转达结果。在这里配置根目录、审批和可用工具。',
-      intro: '修改后对 Leader 会话立即生效，不需要重启。',
+      intro: '修改后立即生效，无需重启。',
       loading: '加载中…',
       notServed: 'super-leader 插件当前没有运行，暂时无法修改设置。',
       readOnly: '本部署的设置为只读。',
@@ -66,6 +72,11 @@ window.__ModuleLoader__.load({
       fullAccessHint: 'Leader 会话的访问模式是其中之一时，写操作不再弹出审批卡片。',
       writeTools: '需要审批的操作',
       writeToolsHint: '未勾选的操作在任何访问模式下都直接执行。更改会话模型始终需要审批。',
+      workerApprovals: '下属审批',
+      workerApprovalMode: '由 Leader 决定下属审批',
+      workerApprovalTimeout: '转回人工前的等待时间（秒）',
+      workerApprovalTimeoutError: '请输入 5 到 600 之间的整数。',
+      workerManualApprovalTools: '仍需手动审批的下属工具名',
       allowTools: 'Leader 额外可用的工具',
       allowToolsHint: '其他插件注册的工具默认对 Leader 会话隐藏，勾选后放行。',
       filter: '筛选工具',
@@ -176,7 +187,7 @@ window.__ModuleLoader__.load({
       };
       return h(React.Fragment, null,
         tools.length === 0 ? h('p', { className: 'sl-hint' }, t('noTools')) : h(React.Fragment, null,
-          h('input', { className: 'sl-input', placeholder: t('filter'), value: filter, onChange: event => setFilter(event.target.value) }),
+          h('input', { className: 'sl-input', placeholder: t('filter'), value: filter, disabled, onChange: event => setFilter(event.target.value) }),
           h('div', { className: 'sl-tools' }, shown.map(name => h('label', { key: name, title: name },
             h('input', { type: 'checkbox', checked: set.has(name), disabled, onChange: event => toggle(name, event.target.checked) }),
             h('span', null, name))))),
@@ -250,12 +261,16 @@ window.__ModuleLoader__.load({
       const rootsError = rootsList.length === 0 || rootsList.some(path => !(path.startsWith('/') || path === '~' || path.startsWith('~/'))) ? t('badRoots') : '';
       const reportValue = current('reportMaxChars');
       const reportError = !Number.isInteger(reportValue) || reportValue < 200 ? t('badNumber') : '';
+      const timeoutValue = current(TIMEOUT.key) ?? TIMEOUT.default;
+      const timeoutError = !Number.isInteger(timeoutValue) || timeoutValue < TIMEOUT.min || timeoutValue > TIMEOUT.max
+        ? t('workerApprovalTimeoutError') : '';
+      const hasErrors = Boolean(rootsError || reportError || timeoutError);
 
       const dirtyKeys = FIELDS.filter(key => resets.includes(key) || (Object.prototype.hasOwnProperty.call(draft, key) && !same(draft[key], saved[key])));
       const dirty = dirtyKeys.length > 0;
 
       const save = async () => {
-        if (rootsError || reportError) return;
+        if (hasErrors) return;
         setSaving(true);
         setMessage(undefined);
         try {
@@ -286,6 +301,8 @@ window.__ModuleLoader__.load({
       const permissionChoices = options?.permissionPresets ?? (current('fullAccessPresets') ?? []).map(id => ({ id, name: id }));
       const writeChoices = (options?.leaderTools ?? ['create_workspace', 'dispatch_task', 'cancel_task', 'set_session_model']).map(id => ({ id, name: `${t(`tool_${id}`)} (${id})` }));
       const globalTools = options?.globalTools ?? [];
+      const leaderDecides = (current('workerApprovalMode') ?? 'leader') === 'leader';
+      const manualToolsDisabled = !writable || !leaderDecides;
 
       return h('div', { className: 'sl-form' },
         h('style', null, CSS),
@@ -295,7 +312,7 @@ window.__ModuleLoader__.load({
         dirty || message ? h('div', { className: 'sl-bar' },
           h('span', { className: `sl-msg sl-grow${message ? (message.ok ? ' ok' : ' err') : ''}` }, message ? message.text : t('unsaved')),
           dirty ? h('button', { type: 'button', className: 'sl-btn', disabled: saving, onClick: discard }, t('discard')) : null,
-          dirty ? h('button', { type: 'button', className: 'sl-btn primary', disabled: !writable || Boolean(rootsError || reportError), onClick: save }, saving ? t('saving') : t('save')) : null) : null,
+          dirty ? h('button', { type: 'button', className: 'sl-btn primary', disabled: !writable || hasErrors, onClick: save }, saving ? t('saving') : t('save')) : null) : null,
 
         h(Field, { t, label: t('roots'), hint: t('rootsHint'), changed: changedFor('workspaceRoots'), onReset: () => reset('workspaceRoots'), disabled: !writable, error: rootsError },
           h('textarea', {
@@ -313,6 +330,26 @@ window.__ModuleLoader__.load({
 
         h(Field, { t, label: t('writeTools'), hint: t('writeToolsHint'), changed: changedFor('writeTools'), onReset: () => reset('writeTools'), disabled: !writable },
           h(Checks, { items: writeChoices, value: current('writeTools') ?? [], disabled: !writable, locked: options?.alwaysWriteTools ?? ['set_session_model'], onChange: value => edit('writeTools', value) })),
+
+        h(Field, { t, label: t('workerApprovals'), changed: changedFor('workerApprovalMode'), onReset: () => reset('workerApprovalMode'), disabled: !writable },
+          h('div', { className: 'sl-checks' }, h('label', null,
+            h('input', {
+              type: 'checkbox', checked: leaderDecides, disabled: !writable,
+              onChange: event => edit('workerApprovalMode', event.target.checked ? 'leader' : 'off'),
+            }),
+            h('span', null, t('workerApprovalMode'))))),
+
+        h(Field, { t, label: t('workerApprovalTimeout'), changed: changedFor(TIMEOUT.key), onReset: () => reset(TIMEOUT.key), disabled: !writable, error: timeoutError },
+          h('input', {
+            className: `sl-input${timeoutError ? ' sl-bad' : ''}`, type: 'number',
+            min: TIMEOUT.min, max: TIMEOUT.max, step: 1, style: { maxWidth: 160 },
+            'aria-label': t('workerApprovalTimeout'), 'aria-invalid': Boolean(timeoutError),
+            value: Number.isFinite(timeoutValue) ? String(timeoutValue) : '', disabled: !writable,
+            onChange: event => edit(TIMEOUT.key, event.target.valueAsNumber),
+          })),
+
+        h(Field, { t, label: t('workerManualApprovalTools'), changed: changedFor('workerManualApprovalTools'), onReset: () => reset('workerManualApprovalTools'), disabled: manualToolsDisabled },
+          h(ToolPicker, { t, tools: globalTools, value: current('workerManualApprovalTools') ?? [], disabled: manualToolsDisabled, onChange: value => edit('workerManualApprovalTools', value) })),
 
         h(Field, { t, label: t('allowTools'), hint: t('allowToolsHint'), changed: changedFor('allowTools'), onReset: () => reset('allowTools'), disabled: !writable },
           h(ToolPicker, { t, tools: globalTools, value: current('allowTools') ?? [], disabled: !writable, onChange: value => edit('allowTools', value) })),
